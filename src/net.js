@@ -13,7 +13,7 @@ const TOKEN_KEY = 'cardclash_net_token';
 // isn't running on localhost — local dev always talks to localhost:8791
 // regardless of this value, and a `?wsHost=` query param always wins over
 // both (handy for pointing a local client at a staging backend).
-const PRODUCTION_WS_HOST = '';
+const PRODUCTION_WS_HOST = 'cardclash-production-b093.up.railway.app';
 
 function hostOverride() {
   return new URLSearchParams(location.search).get('wsHost');
