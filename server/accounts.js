@@ -8,7 +8,13 @@
 // a cleared browser/new device, but the token-based account is still what
 // everything else in this file operates on.
 import crypto from 'node:crypto';
-import { getAccount as dbGetAccount, saveAccount, findAccountByGoogleId } from './db.js';
+import {
+  getAccount as dbGetAccount,
+  saveAccount,
+  findAccountByGoogleId,
+  allAccounts,
+  deleteAccount as dbDeleteAccount,
+} from './db.js';
 import { applyMatchResult } from '../src/ladder.js';
 
 export function getAccount(token) {
@@ -32,6 +38,7 @@ export function getOrCreateAccount(token) {
       trophies: 0,
       currency: { coins: 0, gems: 0, dust: 0 },
       transactions: [],
+      friends: [],
     };
     saveAccount(id, account);
   }
@@ -71,6 +78,75 @@ export function linkGoogleAccount(currentToken, profile) {
   }
   saveAccount(account.token, account);
   return account;
+}
+
+// Removes the Google identity from an account without touching anything
+// else — the account keeps its token, progress, currency, friends. The
+// player can link a Google account again later (their own or a different
+// one); nothing here notifies whatever Google identity used to be attached.
+export function unlinkGoogleAccount(token) {
+  const account = getOrCreateAccount(token);
+  delete account.googleId;
+  delete account.email;
+  saveAccount(token, account);
+  return account;
+}
+
+// Permanently deletes an account. The caller (server/index.js) is
+// responsible for treating this as the destructive, player-confirmed action
+// it is — nothing here asks for confirmation or can undo it.
+export function deleteAccount(token) {
+  dbDeleteAccount(token);
+}
+
+// Top `limit` accounts by trophies, for the public leaderboard screen —
+// deliberately exposes only what publicAccount() would (no token, no
+// email), since this list is visible to every player, not just the account
+// owner.
+export function getLeaderboard(limit = 50) {
+  return Object.values(allAccounts())
+    .sort((a, b) => (b.trophies || 0) - (a.trophies || 0))
+    .slice(0, limit)
+    .map((account, i) => ({ rank: i + 1, username: account.username, trophies: account.trophies || 0 }));
+}
+
+// Where this account currently sits in the full (not just top-`limit`)
+// ranking — used to show "you're #142" even when the player isn't in the
+// visible top of the leaderboard screen.
+export function getRank(token) {
+  const sorted = Object.values(allAccounts()).sort((a, b) => (b.trophies || 0) - (a.trophies || 0));
+  const idx = sorted.findIndex((a) => a.token === token);
+  return idx === -1 ? null : idx + 1;
+}
+
+// Friend codes are just account tokens — no separate identity system, so
+// "adding a friend" is symmetric and immediate (no request/accept step).
+// Rejects adding yourself or a token that isn't a real account.
+export function addFriend(token, friendToken) {
+  if (!friendToken || typeof friendToken !== 'string' || friendToken === token) {
+    return { ok: false, reason: 'invalid' };
+  }
+  const friendAccount = getAccount(friendToken);
+  if (!friendAccount) return { ok: false, reason: 'not_found' };
+  const account = getOrCreateAccount(token);
+  account.friends = account.friends || [];
+  if (!account.friends.includes(friendToken)) account.friends.push(friendToken);
+  friendAccount.friends = friendAccount.friends || [];
+  if (!friendAccount.friends.includes(token)) friendAccount.friends.push(token);
+  saveAccount(token, account);
+  saveAccount(friendToken, friendAccount);
+  return { ok: true };
+}
+
+// Resolves each stored friend token to their current (public-safe) profile.
+// A friend whose account no longer exists (deleted) is silently dropped —
+// see db.js's deleteAccount for why no cleanup pass is needed elsewhere.
+export function getFriendsList(token) {
+  const account = getOrCreateAccount(token);
+  return (account.friends || [])
+    .map((friendToken) => getAccount(friendToken))
+    .filter(Boolean)
+    .map((a) => ({ token: a.token, username: a.username, trophies: a.trophies || 0 }));
 }
 
 export function recordMatchResult(token, won) {

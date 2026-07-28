@@ -45,6 +45,7 @@ let dailyResetTimerId = null;
 let openPile = null; // { side, kind } while a graveyard/exile pile modal is open
 let profileEditingName = false; // true while the profile screen shows the rename input
 let avatarPickerOpen = false; // true while the profile screen shows the avatar grid
+let deleteAccountConfirmOpen = false; // true while the profile screen shows the delete-account confirm modal
 let playMenuOpen = false; // true while home shows the "vs IA / Online" popup under the battle button
 let topMenuOpen = false; // true while the shared topbar's ☰ dropdown (sound/haptics/tutorial) is open
 let aiToastEl = null;
@@ -715,6 +716,7 @@ function renderLadder(fetchFresh = true) {
     ${header()}
     <div class="screen">
       <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Liga</h2></div>
+      <button class="btn small leaderboard-entry-btn" id="btn-leaderboard">🌐 Ranking global</button>
       <div class="ladder-header">
         <div class="ladder-current-arena">
           <span class="ladder-current-icon">${progress.current.icon}</span>
@@ -736,6 +738,7 @@ function renderLadder(fetchFresh = true) {
       <div class="ladder-arenas">${Ladder.ARENAS.map((a, i) => ladderArenaRowHtml(a, i)).join('')}</div>
     </div>`;
   document.getElementById('back').onclick = () => go('home');
+  document.getElementById('btn-leaderboard').onclick = () => go('leaderboard');
   app.querySelectorAll('[data-ladder-claim]').forEach((btn) => {
     btn.onclick = () => {
       const res = Ladder.claimTierReward(save, btn.dataset.ladderClaim);
@@ -758,6 +761,46 @@ function renderLadder(fetchFresh = true) {
       })
       .catch(() => {});
   }
+}
+
+function leaderboardRowHtml(entry, isMe) {
+  const medal = entry.rank === 1 ? '🥇' : entry.rank === 2 ? '🥈' : entry.rank === 3 ? '🥉' : null;
+  return `
+    <div class="leaderboard-row ${isMe ? 'is-me' : ''}">
+      <span class="leaderboard-rank">${medal || `#${entry.rank}`}</span>
+      <span class="leaderboard-name">${escapeHtml(entry.username)}</span>
+      <span class="leaderboard-trophies">🏆 ${entry.trophies}</span>
+    </div>`;
+}
+
+function renderLeaderboard() {
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Ranking global</h2></div>
+      <p class="hint">Los 50 jugadores con más trofeos. Se gana y se pierde jugando partidas Online.</p>
+      <div id="leaderboard-list" class="leaderboard-list"><p class="hint">Cargando…</p></div>
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+
+  Net.fetchLeaderboard()
+    .then(({ leaderboard, myRank }) => {
+      if (screen !== 'leaderboard') return;
+      const list = document.getElementById('leaderboard-list');
+      if (!list) return;
+      if (!leaderboard.length) {
+        list.innerHTML = '<p class="hint">Todavía nadie tiene trofeos — ¡sé el primero!</p>';
+        return;
+      }
+      list.innerHTML = leaderboard.map((entry) => leaderboardRowHtml(entry, myRank === entry.rank)).join('');
+      if (myRank && myRank > leaderboard.length) {
+        list.insertAdjacentHTML('beforeend', `<p class="hint leaderboard-my-rank">Tu posición: #${myRank}</p>`);
+      }
+    })
+    .catch(() => {
+      const list = document.getElementById('leaderboard-list');
+      if (list) list.innerHTML = '<p class="hint">No se pudo cargar el ranking. ¿Está corriendo el servidor?</p>';
+    });
 }
 
 function accountWinRatePct() {
@@ -872,16 +915,39 @@ function renderProfile(fetchFresh = true) {
         ${
           save.googleLinked
             ? `<div class="profile-google-linked">✅ Vinculado con Google${save.googleEmail ? ` · ${escapeHtml(save.googleEmail)}` : ''}</div>
-               <p class="hint">Tu progreso queda guardado en esta cuenta de Google — lo recuperás en cualquier dispositivo.</p>`
+               <p class="hint">Tu progreso queda guardado en esta cuenta de Google — lo recuperás en cualquier dispositivo.</p>
+               <button class="btn small back" id="google-unlink">Desvincular</button>`
             : `<p class="hint">Vinculá tu cuenta con Google para no perder tu progreso si cambiás de dispositivo o borrás los datos del navegador.</p>
                <div id="google-signin-container"></div>`
         }
       </div>
-    </div>`;
+      <button class="profile-friends-btn" id="btn-friends">
+        <span>👥 Amigos</span>
+        <span class="profile-friends-arrow">→</span>
+      </button>
+      <div class="profile-danger-section">
+        <button class="btn danger small" id="delete-account-btn">Borrar cuenta</button>
+        <p class="hint">Borra tu progreso y tu cuenta para siempre. No se puede deshacer.</p>
+      </div>
+    </div>
+    ${
+      deleteAccountConfirmOpen
+        ? `<div class="modal-overlay" id="delete-account-overlay">
+             <div class="modal-box">
+               <p>¿Seguro que querés borrar tu cuenta?<br>Perdés tu progreso, mazos, trofeos y amigos para siempre. No se puede deshacer.</p>
+               <div class="modal-actions">
+                 <button class="btn" id="delete-account-cancel">Cancelar</button>
+                 <button class="btn danger" id="delete-account-confirm">Borrar cuenta</button>
+               </div>
+             </div>
+           </div>`
+        : ''
+    }`;
 
   document.getElementById('back').onclick = () => {
     profileEditingName = false;
     avatarPickerOpen = false;
+    deleteAccountConfirmOpen = false;
     go('home');
   };
   const avatarBtn = document.getElementById('profile-avatar-btn');
@@ -946,6 +1012,49 @@ function renderProfile(fetchFresh = true) {
     };
   }
   if (!save.googleLinked) initGoogleSignInButton();
+  const googleUnlinkBtn = document.getElementById('google-unlink');
+  if (googleUnlinkBtn) {
+    googleUnlinkBtn.onclick = async () => {
+      googleUnlinkBtn.disabled = true;
+      const seq = nextAccountSyncSeq();
+      try {
+        const account = await Net.unlinkGoogleAccount();
+        syncAccountToSave(account, seq);
+        showToast('Cuenta desvinculada de Google.');
+        renderProfile(false);
+      } catch {
+        showToast('No se pudo desvincular. ¿Está corriendo el servidor?');
+        googleUnlinkBtn.disabled = false;
+      }
+    };
+  }
+  document.getElementById('btn-friends').onclick = () => go('friends');
+  document.getElementById('delete-account-btn').onclick = () => {
+    deleteAccountConfirmOpen = true;
+    renderProfile(false);
+  };
+  const deleteCancelBtn = document.getElementById('delete-account-cancel');
+  if (deleteCancelBtn) {
+    deleteCancelBtn.onclick = () => {
+      deleteAccountConfirmOpen = false;
+      renderProfile(false);
+    };
+  }
+  const deleteConfirmBtn = document.getElementById('delete-account-confirm');
+  if (deleteConfirmBtn) {
+    deleteConfirmBtn.onclick = async () => {
+      deleteConfirmBtn.disabled = true;
+      try {
+        await Net.deleteAccount();
+        Net.clearToken();
+        Store.clearSave();
+        location.reload();
+      } catch {
+        showToast('No se pudo borrar la cuenta. ¿Está corriendo el servidor?');
+        deleteConfirmBtn.disabled = false;
+      }
+    };
+  }
 
   if (fetchFresh) {
     const seq = nextAccountSyncSeq();
@@ -957,6 +1066,87 @@ function renderProfile(fetchFresh = true) {
       })
       .catch(() => {});
   }
+}
+
+function friendRowHtml(friend) {
+  return `
+    <div class="friend-row">
+      <div class="friend-row-info">
+        <span class="friend-row-name">${escapeHtml(friend.username)}</span>
+        <span class="friend-row-trophies">🏆 ${friend.trophies}</span>
+      </div>
+      <button class="btn small friend-invite-btn">Crear sala</button>
+    </div>`;
+}
+
+// Friend codes are just account tokens (see server/accounts.js addFriend) —
+// no separate identity system, adding is immediate/mutual, no request step.
+// "Crear sala" reuses the exact same private-room flow as the home screen's
+// online-create option (see playSelectedDeck('create')); there's no live
+// push-invite yet, so the code still has to be shared with the friend
+// through some other channel (chat, voice, etc.) — a natural v2 once the
+// app keeps a persistent connection for online presence.
+function renderFriends() {
+  const token = Net.getToken() || '';
+
+  function loadFriends() {
+    Net.fetchFriends()
+      .then((friends) => {
+        if (screen !== 'friends') return;
+        const list = document.getElementById('friends-list');
+        if (!list) return;
+        list.innerHTML = friends.length ? friends.map(friendRowHtml).join('') : '<p class="hint">Todavía no agregaste amigos.</p>';
+        app.querySelectorAll('.friend-invite-btn').forEach((btn) => {
+          btn.onclick = () => playSelectedDeck('create');
+        });
+      })
+      .catch(() => {
+        const list = document.getElementById('friends-list');
+        if (list) list.innerHTML = '<p class="hint">No se pudo cargar la lista. ¿Está corriendo el servidor?</p>';
+      });
+  }
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Amigos</h2></div>
+      <button class="profile-id-row" id="copy-friend-code" data-tooltip="Copiar código completo">
+        <span class="hint">Tu código de amigo: ${token ? escapeHtml(token.slice(0, 8)) + '…' : '—'}</span>
+        <span class="profile-copy-icon">📋</span>
+      </button>
+      <p class="hint">Compartiselo a un amigo para que te agregue. Para agregar a alguien, pedile el suyo.</p>
+      <div class="friend-add-row">
+        <input id="friend-code-input" class="join-code-input" placeholder="Código de tu amigo" autocapitalize="off" autocomplete="off">
+        <button class="btn" id="add-friend-btn">Agregar</button>
+      </div>
+      <div id="friends-list" class="friends-list"><p class="hint">Cargando…</p></div>
+    </div>`;
+
+  document.getElementById('back').onclick = () => go('home');
+  document.getElementById('copy-friend-code').onclick = () => {
+    navigator.clipboard
+      .writeText(token)
+      .then(() => showToast('Código copiado.'))
+      .catch(() => showToast('No se pudo copiar.'));
+  };
+  document.getElementById('add-friend-btn').onclick = async () => {
+    const input = document.getElementById('friend-code-input');
+    const code = input.value.trim();
+    if (!code) {
+      input.focus();
+      return;
+    }
+    try {
+      await Net.addFriend(code);
+      input.value = '';
+      showToast('Amigo agregado ✅');
+      loadFriends();
+    } catch (err) {
+      showToast(err.message || 'No se pudo agregar.');
+    }
+  };
+
+  loadFriends();
 }
 
 // First-login onboarding: mandatory (no back button) faction choice, then
@@ -1599,6 +1789,9 @@ function playSelectedDeck(mode) {
   persist();
   if (mode === 'ai') {
     startMatch(faction);
+  } else if (mode === 'create') {
+    onlineIntent = { mode: 'create' };
+    startOnlineMatch(faction);
   } else {
     onlineIntent = { mode: 'quick' };
     startOnlineMatch(faction);
@@ -2880,6 +3073,8 @@ export function render() {
   else if (screen === 'missions') renderMissions();
   else if (screen === 'seasonPass') renderSeasonPass();
   else if (screen === 'ladder') renderLadder();
+  else if (screen === 'leaderboard') renderLeaderboard();
+  else if (screen === 'friends') renderFriends();
   else if (screen === 'profile') renderProfile();
   else if (screen === 'tutorial') renderTutorial();
   else if (screen === 'shop') renderShop();

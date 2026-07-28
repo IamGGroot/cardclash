@@ -99,6 +99,13 @@ export function save(state) {
   localStorage.setItem(SAVE_KEY, JSON.stringify(state));
 }
 
+// Used by the "delete account" flow — wipes local game progress so a
+// reload starts fully fresh (onboarding, empty collection) instead of
+// keeping cards/decks tied to a server account that no longer exists.
+export function clearSave() {
+  localStorage.removeItem(SAVE_KEY);
+}
+
 export function addCardsToCollection(state, cards) {
   for (const card of cards) {
     state.collection[card.id] = (state.collection[card.id] || 0) + 1;

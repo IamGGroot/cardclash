@@ -52,6 +52,13 @@ function setToken(token) {
   localStorage.setItem(TOKEN_KEY, token);
 }
 
+// Used by the "delete account" flow — the next getToken() call returns null,
+// so whatever touches the server next (fetchAccount, a match, etc.) is
+// issued a brand-new anonymous account.
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
 let ws = null;
 let account = null;
 let connectPromise = null;
@@ -194,6 +201,60 @@ export async function linkGoogleAccount(idToken) {
   if (!res.ok) throw new Error(data.error || 'No se pudo vincular con Google.');
   if (data.account) setToken(data.account.token);
   return data.account;
+}
+
+export async function unlinkGoogleAccount() {
+  const res = await fetch(`${apiBase()}/api/auth/google/unlink`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: getToken() }),
+  });
+  const data = await res.json();
+  if (data.account) setToken(data.account.token);
+  return data.account;
+}
+
+// Permanently deletes the account on the server. Does not touch anything
+// client-side (local save, token) — the caller (ui.js) is responsible for
+// resetting local state afterward, since "what deleting an account means
+// locally" is a UI decision, not a network one.
+export async function deleteAccount() {
+  const res = await fetch(`${apiBase()}/api/account/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: getToken() }),
+  });
+  if (!res.ok) throw new Error('No se pudo borrar la cuenta.');
+}
+
+export async function fetchLeaderboard() {
+  const res = await fetch(`${apiBase()}/api/leaderboard`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: getToken() }),
+  });
+  return res.json(); // { leaderboard, myRank }
+}
+
+export async function fetchFriends() {
+  const res = await fetch(`${apiBase()}/api/friends/list`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: getToken() }),
+  });
+  const data = await res.json();
+  return data.friends || [];
+}
+
+export async function addFriend(friendToken) {
+  const res = await fetch(`${apiBase()}/api/friends/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: getToken(), friendToken }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'No se pudo agregar el amigo.');
+  return data.friends;
 }
 
 export async function fetchSkus() {

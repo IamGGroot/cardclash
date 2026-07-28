@@ -1241,6 +1241,139 @@ html, body {
   margin-top: 8px;
 }
 
+.profile-friends-btn {
+  appearance: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--bg-alt);
+  border: 1px solid #2a3358;
+  border-radius: 12px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.profile-friends-arrow {
+  opacity: 0.6;
+}
+
+.profile-danger-section {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(255, 90, 90, 0.3);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.profile-danger-section .hint {
+  margin: 8px 0 0;
+}
+
+.leaderboard-entry-btn {
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.leaderboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.leaderboard-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-alt);
+  border: 1px solid #2a3358;
+  border-radius: 10px;
+}
+
+.leaderboard-row.is-me {
+  border-color: var(--gold);
+  box-shadow: 0 0 10px -3px rgba(212, 175, 55, 0.6);
+}
+
+.leaderboard-rank {
+  flex-shrink: 0;
+  width: 32px;
+  font-weight: 800;
+  font-size: 15px;
+  text-align: center;
+}
+
+.leaderboard-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leaderboard-trophies {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--gold-light);
+}
+
+.leaderboard-my-rank {
+  text-align: center;
+  margin-top: 10px;
+}
+
+.friend-add-row {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.friend-add-row .join-code-input {
+  flex: 1;
+}
+
+.friends-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.friend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg-alt);
+  border: 1px solid #2a3358;
+  border-radius: 10px;
+}
+
+.friend-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.friend-row-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friend-row-trophies {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
 .profile-copy-icon {
   font-size: 14px;
   opacity: 0.7;

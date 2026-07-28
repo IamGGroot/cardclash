@@ -60,3 +60,13 @@ export function resetAllAccounts() {
   cache = { accounts: {} };
   persist();
 }
+
+// Permanently removes one account — the player-facing "delete my account".
+// Any stale references left in another account's `friends` array resolve to
+// null via getAccount() and are filtered out by getFriendsList(), so no
+// further cleanup is needed here.
+export function deleteAccount(token) {
+  const db = load();
+  delete db.accounts[token];
+  persist();
+}

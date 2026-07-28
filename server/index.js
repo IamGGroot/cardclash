@@ -3,7 +3,18 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import { HEROES } from '../src/cards.js';
 import { env } from './env.js';
-import { getOrCreateAccount, setUsername, linkGoogleAccount, publicAccount } from './accounts.js';
+import {
+  getOrCreateAccount,
+  setUsername,
+  linkGoogleAccount,
+  unlinkGoogleAccount,
+  deleteAccount,
+  getLeaderboard,
+  getRank,
+  addFriend,
+  getFriendsList,
+  publicAccount,
+} from './accounts.js';
 import { verifyGoogleIdToken, googleSignInConfigured } from './googleAuth.js';
 import { resetAllAccounts } from './db.js';
 import { listSkus, getSku } from './skus.js';
@@ -106,6 +117,51 @@ const server = http.createServer(async (req, res) => {
       }
       const account = linkGoogleAccount(token, profile);
       sendJson(res, 200, { account: publicAccount(account) });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/auth/google/unlink') {
+      const { token } = await readJson(req);
+      const account = unlinkGoogleAccount(token);
+      sendJson(res, 200, { account: publicAccount(account) });
+      return;
+    }
+
+    // Player-initiated, permanent — the client is responsible for its own
+    // confirmation step before ever calling this (see ui.js's delete-account
+    // flow). No recovery path exists once this runs.
+    if (req.method === 'POST' && url.pathname === '/api/account/delete') {
+      const { token } = await readJson(req);
+      if (!token) {
+        sendJson(res, 400, { error: 'Falta token.' });
+        return;
+      }
+      deleteAccount(token);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/leaderboard') {
+      const { token } = await readJson(req);
+      sendJson(res, 200, { leaderboard: getLeaderboard(50), myRank: token ? getRank(token) : null });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/friends/list') {
+      const { token } = await readJson(req);
+      sendJson(res, 200, { friends: getFriendsList(token) });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/friends/add') {
+      const { token, friendToken } = await readJson(req);
+      const result = addFriend(token, friendToken);
+      if (!result.ok) {
+        const message = result.reason === 'not_found' ? 'No existe ninguna cuenta con ese código.' : 'Código inválido.';
+        sendJson(res, 400, { error: message });
+        return;
+      }
+      sendJson(res, 200, { friends: getFriendsList(token) });
       return;
     }
 
