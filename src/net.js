@@ -20,7 +20,7 @@ const PRODUCTION_WS_HOST = 'cardclash-production-b093.up.railway.app';
 // to ship in client code. The exact same value must also be set as
 // GOOGLE_CLIENT_ID on the server (see server/.env.example), since the
 // server independently verifies the audience of every ID token against it.
-export const GOOGLE_CLIENT_ID = '';
+export const GOOGLE_CLIENT_ID = '677935422951-hntjkabnb8fmoijlc4s84s379f367b70.apps.googleusercontent.com';
 
 function hostOverride() {
   return new URLSearchParams(location.search).get('wsHost');
