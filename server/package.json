@@ -10,6 +10,7 @@
     "test": "node --test test/"
   },
   "dependencies": {
+    "google-auth-library": "^9.15.0",
     "ws": "^8.21.1"
   }
 }

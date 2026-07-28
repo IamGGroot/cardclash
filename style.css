@@ -1154,6 +1154,13 @@ html, body {
   color: var(--text);
 }
 
+.faction-pick-name-input {
+  display: block;
+  max-width: 100%;
+  margin: 6px 0 14px;
+  text-align: left;
+}
+
 .profile-name-edit-actions {
   display: flex;
   gap: 8px;
@@ -1204,6 +1211,34 @@ html, body {
   border: 1px solid #2a3358;
   border-radius: 12px;
   color: var(--text);
+}
+
+.profile-account-section {
+  margin-top: 16px;
+  padding: 14px;
+  background: var(--bg-alt);
+  border: 1px solid #2a3358;
+  border-radius: 12px;
+}
+
+.profile-section-title {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--gold-light);
+}
+
+.profile-google-linked {
+  font-size: 14px;
+  font-weight: 700;
+  color: #38e07a;
+  margin-bottom: 4px;
+}
+
+#google-signin-container {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
 }
 
 .profile-copy-icon {

@@ -45,3 +45,11 @@ export function saveAccount(token, account) {
 export function allAccounts() {
   return load().accounts;
 }
+
+// Linear scan is fine at this scale (see the file-level note above about
+// this being a stand-in for a real DB) — a real database would index this
+// by googleId instead.
+export function findAccountByGoogleId(googleId) {
+  const accounts = load().accounts;
+  return Object.values(accounts).find((a) => a.googleId === googleId) ?? null;
+}

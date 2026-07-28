@@ -766,6 +766,38 @@ function accountWinRatePct() {
   return total ? Math.round((wins / total) * 100) : null;
 }
 
+// Renders Google's own Sign-In button into #google-signin-container. Uses
+// their hosted button (not a custom-styled one) because that's the
+// well-supported way to reliably get an ID token from a direct click — a
+// self-triggered One Tap prompt can be silently skipped by the browser.
+// No-ops quietly (no button, no error) until both the GIS script has loaded
+// and GOOGLE_CLIENT_ID has been filled in — see src/net.js.
+function initGoogleSignInButton() {
+  const container = document.getElementById('google-signin-container');
+  if (!container || !Net.GOOGLE_CLIENT_ID || !window.google?.accounts?.id) return;
+  window.google.accounts.id.initialize({
+    client_id: Net.GOOGLE_CLIENT_ID,
+    callback: handleGoogleCredential,
+  });
+  window.google.accounts.id.renderButton(container, {
+    theme: 'filled_black',
+    size: 'large',
+    shape: 'pill',
+    text: 'signin_with',
+    width: 280,
+  });
+}
+
+function handleGoogleCredential(response) {
+  Net.linkGoogleAccount(response.credential)
+    .then((account) => {
+      syncAccountToSave(account);
+      showToast('Cuenta vinculada con Google ✅');
+      if (screen === 'profile') renderProfile(false);
+    })
+    .catch((err) => showToast(err.message || 'No se pudo vincular con Google.'));
+}
+
 function renderProfile(fetchFresh = true) {
   const username = save.username || 'Jugador';
   const arena = Ladder.getArena(save.trophies || 0);
@@ -833,6 +865,16 @@ function renderProfile(fetchFresh = true) {
         <span class="hint">ID de cuenta: ${token ? escapeHtml(token.slice(0, 8)) + '…' : '—'}</span>
         <span class="profile-copy-icon">📋</span>
       </button>
+      <div class="profile-account-section">
+        <h3 class="profile-section-title">Cuenta</h3>
+        ${
+          save.googleLinked
+            ? `<div class="profile-google-linked">✅ Vinculado con Google${save.googleEmail ? ` · ${escapeHtml(save.googleEmail)}` : ''}</div>
+               <p class="hint">Tu progreso queda guardado en esta cuenta de Google — lo recuperás en cualquier dispositivo.</p>`
+            : `<p class="hint">Vinculá tu cuenta con Google para no perder tu progreso si cambiás de dispositivo o borrás los datos del navegador.</p>
+               <div id="google-signin-container"></div>`
+        }
+      </div>
     </div>`;
 
   document.getElementById('back').onclick = () => {
@@ -900,6 +942,7 @@ function renderProfile(fetchFresh = true) {
         .catch(() => showToast('No se pudo copiar el ID.'));
     };
   }
+  if (!save.googleLinked) initGoogleSignInButton();
 
   if (fetchFresh) {
     Net.fetchAccount()
@@ -931,15 +974,26 @@ function renderFactionPick() {
     ${header()}
     <div class="screen">
       <div class="screen-header"><h2>Elegí tu facción</h2></div>
+      <label class="hint" for="faction-pick-username">Elegí tu nombre de jugador</label>
+      <input id="faction-pick-username" class="profile-name-input faction-pick-name-input" maxlength="20" autocomplete="off" placeholder="Ej: DragonSlayer99" value="${escapeAttr(save.username || '')}">
       <p class="hint">Vas a empezar con un mazo básico completo (${Store.CONSTANTS.DECK_SIZE} cartas) de la facción que elijas. Las demás se desbloquean después con sobres — podés cambiar tu mazo principal cuando quieras desde "Mis Mazos".</p>
       <div class="hero-select-grid">${cardsHtml}</div>
     </div>`;
   app.querySelectorAll('.hero-card').forEach((el) => {
     el.onclick = () => {
+      const nameInput = document.getElementById('faction-pick-username');
+      const username = nameInput.value.trim();
+      if (!username) {
+        showToast('Ingresá un nombre antes de elegir tu facción.');
+        nameInput.focus();
+        return;
+      }
       const faction = el.dataset.faction;
       Store.grantStarterDeck(save, faction);
       save.selectedFaction = faction;
+      save.username = username;
       persist();
+      Net.renameAccount(username).then(syncAccountToSave).catch(() => {});
       startGuidedTutorialMatch(faction);
     };
   });
@@ -1721,6 +1775,8 @@ function syncAccountToSave(account) {
   save.username = account.username;
   save.wins = account.wins || 0;
   save.losses = account.losses || 0;
+  save.googleLinked = Boolean(account.googleLinked);
+  save.googleEmail = account.email || null;
   Ladder.syncTrophies(save, account.trophies);
   persist();
 }

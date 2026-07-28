@@ -15,6 +15,13 @@ const TOKEN_KEY = 'cardclash_net_token';
 // both (handy for pointing a local client at a staging backend).
 const PRODUCTION_WS_HOST = 'cardclash-production-b093.up.railway.app';
 
+// OAuth 2.0 Client ID from Google Cloud Console (Credentials → OAuth client
+// ID → "Web application"). This is a public identifier, not a secret — safe
+// to ship in client code. The exact same value must also be set as
+// GOOGLE_CLIENT_ID on the server (see server/.env.example), since the
+// server independently verifies the audience of every ID token against it.
+export const GOOGLE_CLIENT_ID = '';
+
 function hostOverride() {
   return new URLSearchParams(location.search).get('wsHost');
 }
@@ -168,6 +175,23 @@ export async function renameAccount(username) {
     body: JSON.stringify({ token: getToken(), username }),
   });
   const data = await res.json();
+  if (data.account) setToken(data.account.token);
+  return data.account;
+}
+
+// Sends a Google ID token (already obtained via Google Identity Services on
+// the client, see ui.js) to the server for verification. On success the
+// server either links this Google identity onto our current account or
+// switches us to one it was already linked to — either way, adopt whatever
+// token comes back as our own from here on.
+export async function linkGoogleAccount(idToken) {
+  const res = await fetch(`${apiBase()}/api/auth/google`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: getToken(), idToken }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'No se pudo vincular con Google.');
   if (data.account) setToken(data.account.token);
   return data.account;
 }

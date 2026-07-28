@@ -3,7 +3,8 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import { HEROES } from '../src/cards.js';
 import { env } from './env.js';
-import { getOrCreateAccount, setUsername, publicAccount } from './accounts.js';
+import { getOrCreateAccount, setUsername, linkGoogleAccount, publicAccount } from './accounts.js';
+import { verifyGoogleIdToken, googleSignInConfigured } from './googleAuth.js';
 import { listSkus, getSku } from './skus.js';
 import { createCheckoutSession, verifyStripeSignature, handleCheckoutCompleted, webhookConfigured } from './payments.js';
 import {
@@ -74,7 +75,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
-      sendJson(res, 200, { ok: true, ...roomStats(), paymentsConfigured: webhookConfigured() });
+      sendJson(res, 200, { ok: true, ...roomStats(), paymentsConfigured: webhookConfigured(), googleSignInConfigured: googleSignInConfigured() });
       return;
     }
 
@@ -87,6 +88,22 @@ const server = http.createServer(async (req, res) => {
       const { token, username } = await readJson(req);
       let account = getOrCreateAccount(token);
       if (username) account = setUsername(account.token, username);
+      sendJson(res, 200, { account: publicAccount(account) });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/auth/google') {
+      const { token, idToken } = await readJson(req);
+      if (!googleSignInConfigured()) {
+        sendJson(res, 501, { error: 'Google Sign-In no está configurado en el servidor.' });
+        return;
+      }
+      const profile = await verifyGoogleIdToken(idToken);
+      if (!profile) {
+        sendJson(res, 401, { error: 'Token de Google inválido.' });
+        return;
+      }
+      const account = linkGoogleAccount(token, profile);
       sendJson(res, 200, { account: publicAccount(account) });
       return;
     }

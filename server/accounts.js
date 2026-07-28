@@ -1,16 +1,14 @@
-// Player identity for the multiplayer server. Deliberately lightweight: no
-// password/email/OAuth yet — a player is identified by an opaque token the
-// client generates once and stores in localStorage (see src/net.js). This is
-// enough to (a) give every player a stable name across matches and (b) hold
-// a server-authoritative currency ledger that real payments can credit
-// without trusting anything the client says about its own balance.
-//
-// A real account system (email+password or OAuth, so a player isn't locked
-// out the moment they clear browser storage) is the natural next step — flagged
-// in the project summary rather than built here, since it's a genuinely
-// separate feature (recovery flow, verification emails, etc.).
+// Player identity for the multiplayer server. A player is always identified
+// first by an opaque token the client generates once and stores in
+// localStorage (see src/net.js) — that's enough to (a) give every player a
+// stable name across matches and (b) hold a server-authoritative currency
+// ledger that real payments can credit without trusting anything the client
+// says about its own balance. Google Sign-In (see linkGoogleAccount below)
+// is an optional identity layered on top: it lets the same account survive
+// a cleared browser/new device, but the token-based account is still what
+// everything else in this file operates on.
 import crypto from 'node:crypto';
-import { getAccount as dbGetAccount, saveAccount } from './db.js';
+import { getAccount as dbGetAccount, saveAccount, findAccountByGoogleId } from './db.js';
 import { applyMatchResult } from '../src/ladder.js';
 
 export function getAccount(token) {
@@ -46,6 +44,32 @@ export function setUsername(token, username) {
   if (!clean) return account;
   account.username = clean;
   saveAccount(token, account);
+  return account;
+}
+
+// Called after the server has verified a Google ID token (see
+// server/googleAuth.js) — `profile` is the trusted { sub, email, name } from
+// that token, never anything the client claimed directly.
+//
+// Two cases:
+//  - This Google identity was already linked to an account before (they
+//    signed in on another device, or came back after clearing this one) →
+//    switch to that account; whatever local/anonymous progress the caller's
+//    `currentToken` had is left behind (it's a stray anonymous session, not
+//    meant to overwrite a real account's history).
+//  - First time this Google identity has ever signed in → attach it to the
+//    caller's CURRENT account, preserving all of its anonymous progress
+//    instead of starting over.
+export function linkGoogleAccount(currentToken, profile) {
+  const existing = findAccountByGoogleId(profile.sub);
+  if (existing) return existing;
+  const account = getOrCreateAccount(currentToken);
+  account.googleId = profile.sub;
+  account.email = profile.email || null;
+  if (profile.name && (!account.username || /^Jugador\d+$/.test(account.username))) {
+    account.username = String(profile.name).trim().slice(0, 20);
+  }
+  saveAccount(account.token, account);
   return account;
 }
 
@@ -95,5 +119,7 @@ export function publicAccount(account) {
     losses: account.losses,
     trophies: account.trophies || 0,
     currency: account.currency,
+    googleLinked: Boolean(account.googleId),
+    email: account.email || null,
   };
 }
