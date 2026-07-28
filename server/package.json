@@ -1,0 +1,15 @@
+{
+  "name": "cardclash-server",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Multiplayer relay + accounts + payments backend for Card Clash.",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "ws": "^8.21.1"
+  }
+}

@@ -1,0 +1,2996 @@
+import { CARDS, getCard, getHero, HEROES, FACTIONS, cardsForFaction, RARITY_COLORS, RARITY_LABEL } from './cards.js';
+import * as Store from './store.js';
+import { PACKS, GEM_SKUS, COIN_SKUS, DUST_SKUS, WELCOME_OFFER, SEASON_PASS_SKU, openPack, matchReward, AD_REWARD } from './economy.js';
+import {
+  newGame,
+  levelUpAttribute,
+  useHeroSpecial,
+  playCreature,
+  playSpellOrFortune,
+  getValidAttackTargets,
+  getValidMoveTargets,
+  moveCreature,
+  attack,
+  endTurn,
+} from './battle.js';
+import { runAiTurnSteps } from './ai.js';
+import { cardArtSVG, AVATARS } from './art.js';
+import * as Missions from './missions.js';
+import * as DailyDeals from './dailyDeals.js';
+import * as SeasonPass from './seasonPass.js';
+import * as Ladder from './ladder.js';
+import { sfx, vibrate, setSoundEnabled, isSoundEnabled, setHapticsEnabled, isHapticsEnabled } from './sound.js';
+import * as Net from './net.js';
+
+const app = document.getElementById('app');
+let save = Store.load();
+setSoundEnabled(save.soundEnabled !== false);
+setHapticsEnabled(save.vibrationEnabled !== false);
+let screen = 'home';
+let battle = null;
+let currentDeckFaction = null;
+let lastPackReveal = null;
+let pendingPackId = null; // paid-for pack waiting to be dragged open
+
+let pendingPlacement = null; // { idx, card } while choosing a slot for a creature
+let pendingTarget = null; // { idx, card } while choosing a target for a spell/fortune
+let selectedAttacker = null; // { laneIndex, row } while choosing an attack target
+let missionsTabExpanded = false; // home screen's side tab, toggled by tap (desktop also gets :hover)
+let prevOccupancy = new Set();
+let suppressClick = false; // set right after a drag-drop resolves, to swallow the click that follows
+let battleMenuOpen = false;
+let forfeitConfirmOpen = false;
+let endTurnConfirmOpen = false;
+let dailyResetTimerId = null;
+let openPile = null; // { side, kind } while a graveyard/exile pile modal is open
+let profileEditingName = false; // true while the profile screen shows the rename input
+let avatarPickerOpen = false; // true while the profile screen shows the avatar grid
+let playMenuOpen = false; // true while home shows the "vs IA / Online" popup under the battle button
+let topMenuOpen = false; // true while the shared topbar's ☰ dropdown (sound/haptics/tutorial) is open
+let aiToastEl = null;
+let aiToastHideTimer = null;
+
+// ---- Online multiplayer state ----
+let onlineRoom = null; // { code } once a real match against another player is live
+let onlineIntent = null; // { mode: 'quick'|'create'|'join', code? } set before entering heroSelect online
+let onlineStatus = null; // { kind: 'connecting'|'queued'|'waiting'|'error', message?, code? } drives renderOnlineWaiting/renderOnlineLobby
+let pendingTrophyResult = null; // { trophies, delta } from the most recent online matchEnd, consumed once by endMatch()
+
+// ---- Guided first-battle tutorial coach ----
+// Runs on top of a REAL vs-AI match (not a scripted fake one). Each
+// milestone is checked against live `battle` state, but once reached it's
+// latched in tutorialProgress — battle.js legitimately resets fields like
+// heroActionUsed at the start of every turn, so reading them raw on turn 2
+// would make the coach think the player still needs to be taught something
+// they already did on turn 1. "Attacked" has no state field of its own, so
+// it's set directly by the single tap-to-attack call site.
+let tutorialCoachActive = false;
+let tutorialProgress = null; // { heroAction, deployed, endedTurn, attacked }
+
+function isOnline() {
+  return onlineRoom !== null;
+}
+const AI_STEP_DELAY = 650; // ms an opponent action stays visible before the next one plays
+
+function persist() {
+  Store.save(save);
+}
+
+// Claim buttons re-render their whole screen (app.innerHTML = ...), which
+// resets .screen's scrollTop to 0 — annoying when claiming an item low in a
+// long list. Captures/restores the scroll position around the re-render.
+function rerenderPreservingScroll(renderFn) {
+  const screenEl = document.querySelector('.screen');
+  const scrollTop = screenEl ? screenEl.scrollTop : 0;
+  renderFn();
+  const nextScreenEl = document.querySelector('.screen');
+  if (nextScreenEl) nextScreenEl.scrollTop = scrollTop;
+}
+
+function go(next) {
+  clearDailyResetTimer();
+  screen = next;
+  selectedAttacker = null;
+  pendingPlacement = null;
+  pendingTarget = null;
+  playMenuOpen = false;
+  topMenuOpen = false;
+  render();
+}
+
+// Missions/daily-deals both reset at UTC midnight (see todayStr() in
+// missions.js/dailyDeals.js) — this ticks a countdown to that instant and,
+// once it passes, re-renders so the reset is picked up without a reload.
+function msUntilNextUtcMidnight() {
+  const now = new Date();
+  const nextMidnightUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return nextMidnightUtc - now.getTime();
+}
+
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = String(Math.floor(total / 3600)).padStart(2, '0');
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+function clearDailyResetTimer() {
+  if (dailyResetTimerId) {
+    clearInterval(dailyResetTimerId);
+    dailyResetTimerId = null;
+  }
+}
+
+function startDailyResetTimer(elId, onExpire) {
+  clearDailyResetTimer();
+  const tick = () => {
+    const el = document.getElementById(elId);
+    if (!el) {
+      clearDailyResetTimer();
+      return;
+    }
+    const remaining = msUntilNextUtcMidnight();
+    if (remaining <= 0) {
+      clearDailyResetTimer();
+      onExpire();
+      return;
+    }
+    el.textContent = `⏱ ${formatCountdown(remaining)}`;
+  };
+  tick();
+  dailyResetTimerId = setInterval(tick, 1000);
+}
+
+function header() {
+  return `
+    <div class="topbar">
+      <button class="profile-chip" id="profile-chip" data-tooltip="Perfil y cuenta">
+        <span class="profile-chip-avatar">${avatarInnerHtml(save.avatar)}</span>
+        <span class="profile-chip-name">${escapeHtml(save.username || 'Jugador')}</span>
+      </button>
+      <div class="currency">🪙 ${save.coins}</div>
+      <div class="currency">💎 ${save.gems}</div>
+      <div class="currency">✨ ${save.dust || 0}</div>
+      <div class="battle-menu-wrap" id="topbar-menu-wrap">
+        <button class="battle-menu-btn" id="topbar-menu-btn">☰</button>
+        ${
+          topMenuOpen
+            ? `<div class="battle-menu-dropdown">
+                <button class="battle-menu-item" id="topbar-sound-toggle">${isSoundEnabled() ? '🔊 Sonido: activado' : '🔇 Sonido: apagado'}</button>
+                <button class="battle-menu-item" id="topbar-haptics-toggle">${isHapticsEnabled() ? '📳 Vibración: activada' : '📴 Vibración: apagada'}</button>
+                <button class="battle-menu-item" id="topbar-tutorial">❓ Cómo jugar</button>
+                <button class="battle-menu-item" id="topbar-menu-close">✕ Cerrar</button>
+              </div>`
+            : ''
+        }
+      </div>
+    </div>`;
+}
+
+function toggleSound() {
+  save.soundEnabled = !isSoundEnabled();
+  setSoundEnabled(save.soundEnabled);
+  persist();
+}
+
+function toggleHaptics() {
+  save.vibrationEnabled = !isHapticsEnabled();
+  setHapticsEnabled(save.vibrationEnabled);
+  persist();
+}
+
+// Swaps just the .topbar DOM node in place (not a full screen render) so
+// opening/closing the ☰ dropdown never disturbs the current screen's scroll
+// position — the same reason claim buttons need their own scroll-preserving
+// re-render (see rerenderPreservingScroll).
+function rerenderHeader() {
+  const topbar = document.querySelector('.topbar');
+  if (!topbar) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = header();
+  const next = wrapper.firstElementChild;
+  topbar.replaceWith(next);
+  wireHeader();
+  wireTooltips(next);
+}
+
+function wireHeader() {
+  const profileBtn = document.getElementById('profile-chip');
+  if (profileBtn) profileBtn.onclick = () => go('profile');
+
+  const menuBtn = document.getElementById('topbar-menu-btn');
+  if (menuBtn) {
+    menuBtn.onclick = () => {
+      topMenuOpen = !topMenuOpen;
+      rerenderHeader();
+    };
+  }
+  const closeBtn = document.getElementById('topbar-menu-close');
+  if (closeBtn) {
+    closeBtn.onclick = () => {
+      topMenuOpen = false;
+      rerenderHeader();
+    };
+  }
+  const soundBtn = document.getElementById('topbar-sound-toggle');
+  if (soundBtn) {
+    soundBtn.onclick = () => {
+      toggleSound();
+      soundBtn.textContent = isSoundEnabled() ? '🔊 Sonido: activado' : '🔇 Sonido: apagado';
+    };
+  }
+  const hapticsBtn = document.getElementById('topbar-haptics-toggle');
+  if (hapticsBtn) {
+    hapticsBtn.onclick = () => {
+      toggleHaptics();
+      hapticsBtn.textContent = isHapticsEnabled() ? '📳 Vibración: activada' : '📴 Vibración: apagada';
+    };
+  }
+  const tutorialBtn = document.getElementById('topbar-tutorial');
+  if (tutorialBtn) {
+    tutorialBtn.onclick = () => {
+      topMenuOpen = false;
+      go('tutorial');
+    };
+  }
+}
+
+function attrLabel(attr) {
+  return attr === 'might' ? 'F' : attr === 'magic' ? 'M' : 'D';
+}
+
+function placementIcon(placement) {
+  return placement === 'melee' ? '🗡' : placement === 'shooter' ? '🏹' : '🪽';
+}
+
+function placementLabel(placement) {
+  return placement === 'melee' ? 'Cuerpo a cuerpo' : placement === 'shooter' ? 'A distancia' : 'Volador';
+}
+
+function typeLabel(type) {
+  return type === 'creature' ? 'Criatura' : type === 'spell' ? 'Hechizo' : 'Fortuna';
+}
+
+function escapeAttr(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function avatarInnerHtml(avatarId) {
+  const avatar = AVATARS.find((a) => a.id === avatarId);
+  return avatar ? `<img class="avatar-img" src="${avatar.src}" alt="" loading="lazy" />` : '🙂';
+}
+
+function cardTooltip(card) {
+  const faction = FACTIONS[card.faction];
+  const attr = card.type === 'creature' ? 'might' : card.type === 'spell' ? 'magic' : 'destiny';
+  const lines = [
+    `${card.name} — ${RARITY_LABEL[card.rarity]}`,
+    `Facción: ${faction.name}`,
+    `Coste: ${card.cost} · Requiere ${attrFullLabel(attr)} ${card.requirement}`,
+  ];
+  if (card.type === 'creature') {
+    lines.push(`Tipo: Criatura (${placementLabel(card.placement)})`);
+    lines.push(`Ataque ${card.atk} · Contraataque ${card.retaliate} · Vida ${card.life}`);
+  } else {
+    lines.push(`Tipo: ${typeLabel(card.type)}`);
+  }
+  if (card.text) lines.push(card.text);
+  return escapeAttr(lines.join('\n'));
+}
+
+function cardVisual(card, extraClasses = '') {
+  const color = RARITY_COLORS[card.rarity];
+  const isFoil = card.rarity === 'epic' || card.rarity === 'legendary';
+  const attr = card.type === 'creature' ? 'might' : card.type === 'spell' ? 'magic' : 'destiny';
+  const statsHtml =
+    card.type === 'creature'
+      ? `<div class="card-stats"><span class="atk">${card.atk}</span><span class="ret">${card.retaliate}</span><span class="life">${card.life}</span></div>${card.text ? `<div class="ability-text">${card.text}</div>` : ''}`
+      : `<div class="card-stats spell-tag">${card.text || ''}</div>`;
+  return `
+    <div class="card rarity-${card.rarity} ${isFoil ? 'foil' : ''} ${extraClasses}" style="--rarity-color:${color}" data-tooltip="${cardTooltip(card)}">
+      <div class="card-cost">${card.cost}</div>
+      <div class="req-badge req-${attr}">${attrLabel(attr)}${card.requirement}</div>
+      <div class="card-art">${cardArtSVG(card)}</div>
+      ${isFoil ? '<div class="foil-sheen"></div>' : ''}
+      ${card.type === 'creature' ? `<div class="placement-tag">${placementIcon(card.placement)}</div>` : ''}
+      <div class="card-name">${card.name}</div>
+      ${statsHtml}
+    </div>`;
+}
+
+// ---------------- Home / meta screens ----------------
+
+function sortedMissionsForWidget() {
+  // Surface ready-to-claim missions first, but otherwise leave catalog order
+  // alone — claiming a mission must not bump it out of the visible slots.
+  return [...Missions.MISSIONS].sort((a, b) => {
+    const aReady = Missions.isMissionComplete(save, a) && !Missions.isMissionClaimed(save, a);
+    const bReady = Missions.isMissionComplete(save, b) && !Missions.isMissionClaimed(save, b);
+    if (aReady !== bReady) return aReady ? -1 : 1;
+    return 0;
+  });
+}
+
+function renderHome() {
+  Ladder.ensureLadderSave(save);
+  const claimable = Missions.countClaimable(save);
+  const spClaimable = SeasonPass.countClaimable(save);
+  const ladderClaimable = Ladder.countClaimable(save);
+  const widgetMissions = sortedMissionsForWidget().slice(0, 3);
+
+  const league = Ladder.getProgressToNextArena(save);
+  const spLevel = SeasonPass.getLevel(save);
+  const spProgress = SeasonPass.getLevelProgress(save);
+  const spPct = Math.round((spProgress.current / spProgress.target) * 100);
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen home-screen home-screen-v2">
+      <div class="home">
+        <h1>Card Clash</h1>
+        <p class="tagline">TCG táctico por facciones — combate en carriles.</p>
+
+        <button class="home-pass-banner" id="btn-pass-banner">
+          <span class="home-pass-icon">🎫</span>
+          <div class="home-pass-info">
+            <div class="home-pass-title">Pase de Temporada · Nivel ${spLevel}</div>
+            <div class="home-pass-bar"><div class="home-pass-bar-fill" style="width:${spPct}%"></div></div>
+          </div>
+          ${spClaimable ? `<span class="home-nav-badge">${spClaimable}</span>` : ''}
+        </button>
+
+        <button class="home-league-strip" id="btn-league-strip">
+          <span class="home-league-icon">${league.current.icon}</span>
+          <div class="home-league-info">
+            <div class="home-league-name">${league.current.name}</div>
+            <div class="home-league-bar"><div class="home-league-bar-fill" style="width:${league.pct}%"></div></div>
+          </div>
+          <div class="home-league-trophies">🏆 ${save.trophies}</div>
+          ${ladderClaimable ? `<span class="home-nav-badge">${ladderClaimable}</span>` : ''}
+        </button>
+      </div>
+    </div>
+
+    ${
+      playMenuOpen
+        ? `<div class="play-menu-backdrop" id="play-menu-backdrop"></div>
+           <div class="play-menu">
+             <button class="play-menu-option" id="play-vs-ai">
+               <span class="play-menu-icon">🤖</span>
+               <span>Jugar vs IA</span>
+             </button>
+             <button class="play-menu-option online" id="play-online">
+               <span class="play-menu-icon">🌐</span>
+               <span>Jugar Online</span>
+             </button>
+           </div>`
+        : ''
+    }
+
+    <div class="home-bottom-nav">
+      <button class="home-nav-item" id="btn-collection">
+        <span class="home-nav-icon">🃏</span>
+        <span class="home-nav-label">Colección</span>
+      </button>
+      <button class="home-nav-item" id="btn-shop">
+        <span class="home-nav-icon">🛒</span>
+        <span class="home-nav-label">Tienda</span>
+      </button>
+      <button class="home-nav-battle ${playMenuOpen ? 'active' : ''}" id="btn-play" data-tooltip="Jugar">⚔️</button>
+      <button class="home-nav-item" id="btn-deck">
+        <span class="home-nav-icon">🛠️</span>
+        <span class="home-nav-label">Mazos</span>
+      </button>
+      <button class="home-nav-item" id="btn-missions">
+        <span class="home-nav-icon">🎯</span>
+        <span class="home-nav-label">Misiones</span>
+        ${claimable ? `<span class="home-nav-badge">${claimable}</span>` : ''}
+      </button>
+    </div>
+
+    <div class="missions-tab-wrap ${missionsTabExpanded ? 'expanded' : ''}" id="missions-tab-wrap">
+      <aside class="missions-widget missions-tab-panel">
+        <div class="missions-widget-header">
+          <h3>🎯 Misiones diarias</h3>
+          <div class="missions-widget-header-right">
+            <span id="missions-reset-timer" class="missions-widget-timer"></span>
+            ${claimable ? `<span class="missions-widget-badge">${claimable} para reclamar</span>` : ''}
+          </div>
+        </div>
+        ${widgetMissions.map((m) => missionRowHtml(m, true)).join('')}
+        <button class="btn" id="missions-widget-more">Ver todas →</button>
+      </aside>
+      <button class="missions-tab-handle" id="missions-tab-handle">
+        🎯 <span class="missions-tab-handle-label">Misiones</span>${claimable ? `<span class="badge-count">${claimable}</span>` : ''}
+      </button>
+    </div>`;
+  document.getElementById('btn-play').onclick = () => {
+    playMenuOpen = !playMenuOpen;
+    renderHome();
+  };
+  document.getElementById('btn-collection').onclick = () => go('collection');
+  document.getElementById('btn-deck').onclick = () => go('deckSelect');
+  document.getElementById('btn-shop').onclick = () => go('shop');
+  document.getElementById('btn-missions').onclick = () => go('missions');
+  document.getElementById('btn-league-strip').onclick = () => go('ladder');
+  const backdrop = document.getElementById('play-menu-backdrop');
+  if (backdrop) {
+    backdrop.onclick = () => {
+      playMenuOpen = false;
+      renderHome();
+    };
+  }
+  const playAiBtn = document.getElementById('play-vs-ai');
+  if (playAiBtn) {
+    playAiBtn.onclick = () => {
+      playMenuOpen = false;
+      playSelectedDeck('ai');
+    };
+  }
+  const playOnlineBtn = document.getElementById('play-online');
+  if (playOnlineBtn) {
+    playOnlineBtn.onclick = () => {
+      playMenuOpen = false;
+      playSelectedDeck('online');
+    };
+  }
+  document.getElementById('btn-pass-banner').onclick = () => go('seasonPass');
+  document.getElementById('missions-widget-more').onclick = () => go('missions');
+  document.getElementById('missions-tab-handle').onclick = () => {
+    missionsTabExpanded = !missionsTabExpanded;
+    renderHome();
+  };
+  wireMissionClaimButtons(renderHome);
+  startDailyResetTimer('missions-reset-timer', renderHome);
+}
+
+function missionRowHtml(mission, compact = false) {
+  const progress = Missions.getMissionProgress(save, mission);
+  const complete = Missions.isMissionComplete(save, mission);
+  const claimed = Missions.isMissionClaimed(save, mission);
+  const pct = Math.round((progress / mission.target) * 100);
+  const rewardParts = [];
+  if (mission.reward.coins) rewardParts.push(`🪙 ${mission.reward.coins}`);
+  if (mission.reward.gems) rewardParts.push(`💎 ${mission.reward.gems}`);
+  rewardParts.push(`⭐ ${MISSION_XP_BY_DIFFICULTY[mission.difficulty] || 0} XP`);
+  return `
+    <div class="mission-row ${compact ? 'compact' : ''} ${claimed ? 'claimed' : ''}">
+      <div class="mission-row-main">
+        <div class="mission-row-title">
+          <span class="mission-diff mission-diff-${mission.difficulty}">${Missions.DIFFICULTY_LABEL[mission.difficulty]}</span>
+          <strong class="${claimed ? 'mission-title-done' : ''}">${mission.title}</strong>
+        </div>
+        ${compact ? '' : `<div class="mission-row-text">${mission.text}</div>`}
+        <div class="mission-progress-bar"><div class="mission-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
+        <div class="mission-row-progress-label">${progress}/${mission.target}</div>
+      </div>
+      <div class="mission-row-side">
+        <div class="mission-reward">${rewardParts.join(' ')}</div>
+        ${
+          claimed
+            ? `<span class="mission-claimed-tag">Reclamado ✓</span>`
+            : `<button class="btn small mission-claim-btn" data-claim="${mission.id}" ${complete ? '' : 'disabled'}>Reclamar</button>`
+        }
+      </div>
+    </div>`;
+}
+
+const MISSION_XP_BY_DIFFICULTY = {
+  easy: SeasonPass.XP_REWARDS.missionEasy,
+  medium: SeasonPass.XP_REWARDS.missionMedium,
+  hard: SeasonPass.XP_REWARDS.missionHard,
+};
+
+function wireMissionClaimButtons(rerender) {
+  app.querySelectorAll('[data-claim]').forEach((btn) => {
+    btn.onclick = () => {
+      const mission = Missions.MISSIONS.find((m) => m.id === btn.dataset.claim);
+      if (Missions.claimMission(save, btn.dataset.claim)) {
+        SeasonPass.addSeasonXp(save, MISSION_XP_BY_DIFFICULTY[mission?.difficulty] || 0);
+        persist();
+        sfx.coin();
+        vibrate(10);
+        rerenderPreservingScroll(rerender);
+      }
+    };
+  });
+}
+
+function missionProgressBarHtml(progress) {
+  const pct = progress.target > 0 ? Math.round((progress.current / progress.target) * 100) : 0;
+  const complete = progress.current >= progress.target;
+  return `<div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>`;
+}
+
+function renderMissions() {
+  const overall = Missions.getOverallProgress(save);
+  const sections = Object.values(Missions.MISSION_CATEGORIES)
+    .map((cat) => {
+      const missions = Missions.MISSIONS.filter((m) => m.category === cat.id);
+      const progress = Missions.getCategoryProgress(save, cat.id);
+      return `
+        <div class="faction-section">
+          <div class="faction-section-header">
+            <h3>${cat.icon} ${cat.label}</h3>
+            <span class="faction-section-progress">${progress.current}/${progress.target}</span>
+          </div>
+          ${missionProgressBarHtml(progress)}
+          <div class="mission-group-gap"></div>
+          ${missions.map((m) => missionRowHtml(m)).join('')}
+        </div>`;
+    })
+    .join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header">
+        <button class="btn back" id="back">← Volver</button>
+        <h2>Misiones diarias</h2>
+        <span id="missions-reset-timer-full" class="missions-widget-timer screen-header-timer"></span>
+      </div>
+      <p class="hint">Se reinician todos los días. ¡Volvé mañana por más!</p>
+      <div class="deck-progress">
+        <div class="deck-progress-label">Progreso total del día · ${overall.current}/${overall.target}</div>
+        ${missionProgressBarHtml(overall)}
+      </div>
+      ${sections}
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  wireMissionClaimButtons(renderMissions);
+  startDailyResetTimer('missions-reset-timer-full', renderMissions);
+}
+
+const TUTORIAL_SECTIONS = [
+  { icon: '🎯', title: 'Objetivo', text: 'Bajá la vida del héroe rival a 0 antes de que el tuyo llegue a 0.' },
+  {
+    icon: '💠',
+    title: 'Tu turno',
+    text: 'El maná sube +1 por turno y se recarga entero. Robás 1 carta. Elegís una sola acción de héroe: subir un atributo (Fuerza, Magia o Destino) o tu habilidad especial.',
+  },
+  {
+    icon: '🗺️',
+    title: 'El campo',
+    text: '4 carriles con fila delantera y trasera. Cuerpo a cuerpo va adelante, a distancia atrás, volador en cualquiera. Cada carta pide maná más un nivel mínimo del atributo correspondiente.',
+  },
+  {
+    icon: '🗡️',
+    title: 'Combate',
+    text: 'Tu criatura ataca primero; si la rival sobrevive, contraataca — a distancia nunca recibe contraataque. En vez de atacar, una criatura lista puede moverse a otro casillero libre.',
+  },
+];
+
+function renderTutorial() {
+  const sectionsHtml = TUTORIAL_SECTIONS.map(
+    (s) => `
+      <div class="tutorial-card">
+        <div class="tutorial-card-icon">${s.icon}</div>
+        <div class="tutorial-card-body">
+          <h3>${s.title}</h3>
+          <p class="tutorial-text">${s.text}</p>
+        </div>
+      </div>`
+  ).join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen tutorial-screen">
+      <div class="screen-header"><h2>Cómo jugar</h2></div>
+      <div class="tutorial-list">${sectionsHtml}</div>
+      <button class="tutorial-done-btn" id="tutorial-done">¡Entendido, a jugar! →</button>
+    </div>`;
+  document.getElementById('tutorial-done').onclick = () => {
+    save.tutorialSeen = true;
+    persist();
+    go('home');
+  };
+}
+
+function seasonPassRewardHtml(entry, track) {
+  const claimed = SeasonPass.isRewardClaimed(save, entry.level, track);
+  const claimable = SeasonPass.isRewardClaimable(save, entry.level, track);
+  const locked = track === 'premium' && !SeasonPass.isPremiumUnlocked(save);
+  const reward = track === 'premium' ? entry.premium : entry.free;
+  const parts = [];
+  if (reward.coins) parts.push(`🪙${reward.coins}`);
+  if (reward.gems) parts.push(`💎${reward.gems}`);
+  if (reward.dust) parts.push(`✨${reward.dust}`);
+  return `
+    <div class="sp-reward ${track} ${claimed ? 'claimed' : ''}">
+      <div class="sp-reward-value">${parts.join(' ')}</div>
+      ${
+        claimed
+          ? '<span class="sp-reward-tag">✓</span>'
+          : locked
+            ? '<span class="sp-reward-tag">🔒</span>'
+            : `<button class="btn tiny" data-sp-claim="${entry.level}:${track}" ${claimable ? '' : 'disabled'}>Reclamar</button>`
+      }
+    </div>`;
+}
+
+function renderSeasonPass() {
+  const level = SeasonPass.getLevel(save);
+  const progress = SeasonPass.getLevelProgress(save);
+  const pct = Math.round((progress.current / progress.target) * 100);
+  const days = SeasonPass.daysRemaining(save);
+  const premiumUnlocked = SeasonPass.isPremiumUnlocked(save);
+
+  const rowsHtml = SeasonPass.REWARDS.map(
+    (entry) => `
+    <div class="sp-level-row ${entry.level <= level ? 'reached' : ''}">
+      <div class="sp-level-num">${entry.level}</div>
+      ${seasonPassRewardHtml(entry, 'free')}
+      ${seasonPassRewardHtml(entry, 'premium')}
+    </div>`
+  ).join('');
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Pase de Temporada</h2></div>
+      <div class="sp-header">
+        <div class="sp-level-badge">Nivel ${level}</div>
+        <div class="deck-progress">
+          <div class="deck-progress-label">${progress.current}/${progress.target} XP · ${days} día${days === 1 ? '' : 's'} restante${days === 1 ? '' : 's'}</div>
+          <div class="deck-progress-bar"><div class="deck-progress-fill" style="width:${pct}%"></div></div>
+        </div>
+      </div>
+      ${
+        premiumUnlocked
+          ? ''
+          : `<button class="btn primary big" id="unlock-premium">🎫 Desbloquear Pase Premium — ${SEASON_PASS_SKU.priceLabel}</button>`
+      }
+      <div class="sp-columns-label"><span>Nivel</span><span>Gratis</span><span>Premium</span></div>
+      <div class="sp-levels">${rowsHtml}</div>
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  const unlockBtn = document.getElementById('unlock-premium');
+  if (unlockBtn) {
+    // Real-money only, same "compra simulada" mock-purchase convention as
+    // the shop's gem/coin/dust SKUs — no gems are ever spent here.
+    unlockBtn.onclick = () => {
+      const res = SeasonPass.unlockPremium(save);
+      if (res.ok) {
+        persist();
+        sfx.coin();
+        renderSeasonPass();
+      }
+    };
+  }
+  app.querySelectorAll('[data-sp-claim]').forEach((btn) => {
+    btn.onclick = () => {
+      const [levelStr, track] = btn.dataset.spClaim.split(':');
+      const res = SeasonPass.claimReward(save, Number(levelStr), track);
+      if (res.ok) {
+        persist();
+        sfx.coin();
+        vibrate(10);
+        rerenderPreservingScroll(renderSeasonPass);
+      }
+    };
+  });
+}
+
+function ladderArenaRowHtml(arena, index) {
+  const reached = save.trophies >= arena.threshold;
+  const claimed = Ladder.isTierClaimed(save, arena.id);
+  const claimable = Ladder.isTierClaimable(save, arena.id);
+  const isCurrent = index === Ladder.getArenaIndex(save.trophies);
+  const rewardParts = [];
+  if (arena.reward.coins) rewardParts.push(`🪙${arena.reward.coins}`);
+  if (arena.reward.gems) rewardParts.push(`💎${arena.reward.gems}`);
+  if (arena.reward.dust) rewardParts.push(`✨${arena.reward.dust}`);
+  return `
+    <div class="ladder-arena-row ${reached ? 'reached' : 'locked'} ${isCurrent ? 'current' : ''}">
+      <div class="ladder-arena-icon">${arena.icon}</div>
+      <div class="ladder-arena-main">
+        <div class="ladder-arena-name">${arena.name}${isCurrent ? '<span class="ladder-current-tag">Liga actual</span>' : ''}</div>
+        <div class="ladder-arena-threshold">${arena.threshold} 🏆</div>
+      </div>
+      <div class="ladder-arena-side">
+        <div class="ladder-arena-reward">${rewardParts.join(' ') || '—'}</div>
+        ${
+          claimed
+            ? '<span class="sp-reward-tag">✓</span>'
+            : reached
+              ? `<button class="btn tiny" data-ladder-claim="${arena.id}" ${claimable ? '' : 'disabled'}>Reclamar</button>`
+              : '<span class="ladder-arena-lock">🔒</span>'
+        }
+      </div>
+    </div>`;
+}
+
+// fetchFresh: pulls the server-authoritative trophy count (via REST, no live
+// WS connection needed) once when the screen is first opened. Re-renders
+// triggered from within this screen (claiming a reward, the fetch itself
+// resolving) pass false so they don't keep re-triggering more fetches.
+function renderLadder(fetchFresh = true) {
+  Ladder.ensureLadderSave(save);
+  const progress = Ladder.getProgressToNextArena(save);
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Liga</h2></div>
+      <div class="ladder-header">
+        <div class="ladder-current-arena">
+          <span class="ladder-current-icon">${progress.current.icon}</span>
+          <div>
+            <div class="ladder-current-name">${progress.current.name}</div>
+            <div class="ladder-trophy-count">🏆 ${save.trophies}</div>
+          </div>
+        </div>
+        ${
+          progress.next
+            ? `<div class="deck-progress">
+                <div class="deck-progress-label">${save.trophies - progress.current.threshold}/${progress.next.threshold - progress.current.threshold} 🏆 hasta ${progress.next.name}</div>
+                <div class="deck-progress-bar"><div class="deck-progress-fill" style="width:${progress.pct}%"></div></div>
+              </div>`
+            : '<p class="hint">¡Llegaste a la liga más alta!</p>'
+        }
+      </div>
+      <p class="hint">Los trofeos se ganan y se pierden jugando partidas Online. Cada liga que alcances queda desbloqueada para siempre.</p>
+      <div class="ladder-arenas">${Ladder.ARENAS.map((a, i) => ladderArenaRowHtml(a, i)).join('')}</div>
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  app.querySelectorAll('[data-ladder-claim]').forEach((btn) => {
+    btn.onclick = () => {
+      const res = Ladder.claimTierReward(save, btn.dataset.ladderClaim);
+      if (res.ok) {
+        persist();
+        sfx.coin();
+        vibrate(10);
+        rerenderPreservingScroll(() => renderLadder(false));
+      }
+    };
+  });
+
+  if (fetchFresh) {
+    Net.fetchAccount()
+      .then((account) => {
+        if (!account || screen !== 'ladder') return;
+        syncAccountToSave(account);
+        renderLadder(false);
+      })
+      .catch(() => {});
+  }
+}
+
+function accountWinRatePct() {
+  const wins = save.wins || 0;
+  const losses = save.losses || 0;
+  const total = wins + losses;
+  return total ? Math.round((wins / total) * 100) : null;
+}
+
+function renderProfile(fetchFresh = true) {
+  const username = save.username || 'Jugador';
+  const arena = Ladder.getArena(save.trophies || 0);
+  const winRate = accountWinRatePct();
+  const token = Net.getToken() || '';
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen profile-screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Perfil</h2></div>
+      <div class="profile-card">
+        <button class="profile-avatar-lg" id="profile-avatar-btn" data-tooltip="Cambiar foto">
+          ${avatarInnerHtml(save.avatar)}
+          <span class="profile-avatar-edit-badge">✏️</span>
+        </button>
+        ${
+          avatarPickerOpen
+            ? `<div class="avatar-picker">
+                ${AVATARS.map(
+                  (a) => `<button class="avatar-option ${save.avatar === a.id ? 'selected' : ''}" data-avatar="${a.id}">
+                    <img src="${a.src}" alt="" loading="lazy" />
+                  </button>`
+                ).join('')}
+              </div>`
+            : ''
+        }
+        ${
+          profileEditingName
+            ? `<div class="profile-name-edit">
+                <input id="profile-name-input" class="profile-name-input" maxlength="20" autocomplete="off" value="${escapeAttr(username)}">
+                <div class="profile-name-edit-actions">
+                  <button class="btn small" id="profile-name-save">Guardar</button>
+                  <button class="btn small back" id="profile-name-cancel">Cancelar</button>
+                </div>
+              </div>`
+            : `<div class="profile-name-row">
+                <span class="profile-name-lg">${escapeHtml(username)}</span>
+                <button class="profile-edit-btn" id="profile-edit" data-tooltip="Cambiar nombre">✏️</button>
+              </div>`
+        }
+      </div>
+      <div class="profile-stats-grid">
+        <div class="profile-stat">
+          <span class="profile-stat-icon">${arena.icon}</span>
+          <span class="profile-stat-value">${save.trophies || 0}</span>
+          <span class="profile-stat-label">${arena.name}</span>
+        </div>
+        <div class="profile-stat">
+          <span class="profile-stat-icon">✅</span>
+          <span class="profile-stat-value">${save.wins || 0}</span>
+          <span class="profile-stat-label">Victorias</span>
+        </div>
+        <div class="profile-stat">
+          <span class="profile-stat-icon">❌</span>
+          <span class="profile-stat-value">${save.losses || 0}</span>
+          <span class="profile-stat-label">Derrotas</span>
+        </div>
+        <div class="profile-stat">
+          <span class="profile-stat-icon">📊</span>
+          <span class="profile-stat-value">${winRate === null ? '—' : winRate + '%'}</span>
+          <span class="profile-stat-label">Efectividad</span>
+        </div>
+      </div>
+      <button class="profile-id-row" id="profile-copy-id" data-tooltip="Copiar ID de cuenta">
+        <span class="hint">ID de cuenta: ${token ? escapeHtml(token.slice(0, 8)) + '…' : '—'}</span>
+        <span class="profile-copy-icon">📋</span>
+      </button>
+    </div>`;
+
+  document.getElementById('back').onclick = () => {
+    profileEditingName = false;
+    avatarPickerOpen = false;
+    go('home');
+  };
+  const avatarBtn = document.getElementById('profile-avatar-btn');
+  if (avatarBtn) {
+    avatarBtn.onclick = () => {
+      avatarPickerOpen = !avatarPickerOpen;
+      renderProfile(false);
+    };
+  }
+  app.querySelectorAll('[data-avatar]').forEach((el) => {
+    el.onclick = () => {
+      save.avatar = el.dataset.avatar;
+      persist();
+      avatarPickerOpen = false;
+      sfx.click();
+      renderProfile(false);
+    };
+  });
+  const editBtn = document.getElementById('profile-edit');
+  if (editBtn) {
+    editBtn.onclick = () => {
+      profileEditingName = true;
+      renderProfile(false);
+    };
+  }
+  const cancelBtn = document.getElementById('profile-name-cancel');
+  if (cancelBtn) {
+    cancelBtn.onclick = () => {
+      profileEditingName = false;
+      renderProfile(false);
+    };
+  }
+  const saveBtn = document.getElementById('profile-name-save');
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
+      const input = document.getElementById('profile-name-input');
+      const next = input.value.trim();
+      if (!next) {
+        input.focus();
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        const account = await Net.renameAccount(next);
+        syncAccountToSave(account);
+        profileEditingName = false;
+        renderProfile(false);
+      } catch {
+        showToast('No se pudo cambiar el nombre. ¿Está corriendo el servidor?');
+        saveBtn.disabled = false;
+      }
+    };
+  }
+  const copyBtn = document.getElementById('profile-copy-id');
+  if (copyBtn && token) {
+    copyBtn.onclick = () => {
+      navigator.clipboard
+        .writeText(token)
+        .then(() => showToast('ID de cuenta copiado.'))
+        .catch(() => showToast('No se pudo copiar el ID.'));
+    };
+  }
+
+  if (fetchFresh) {
+    Net.fetchAccount()
+      .then((account) => {
+        if (!account || screen !== 'profile' || profileEditingName) return;
+        syncAccountToSave(account);
+        renderProfile(false);
+      })
+      .catch(() => {});
+  }
+}
+
+// First-login onboarding: mandatory (no back button) faction choice, then
+// grants that faction's 16-card starter deck and drops straight into the
+// guided tutorial battle. Reuses the .hero-card grid styling from the
+// (otherwise now-vestigial) online hero-select screen below.
+function renderFactionPick() {
+  const cardsHtml = HEROES.map((hero) => {
+    const faction = FACTIONS[hero.faction];
+    return `
+      <div class="hero-card theme-${faction.theme}" data-faction="${hero.faction}">
+        <div class="hero-card-faction">${faction.name}</div>
+        <div class="hero-card-name">${hero.name}</div>
+        <div class="hero-card-tagline">${faction.tagline}</div>
+        <div class="hero-card-special"><strong>${hero.special.label}:</strong> ${hero.special.text}</div>
+      </div>`;
+  }).join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><h2>Elegí tu facción</h2></div>
+      <p class="hint">Vas a empezar con un mazo básico completo (${Store.CONSTANTS.DECK_SIZE} cartas) de la facción que elijas. Las demás se desbloquean después con sobres — podés cambiar tu mazo principal cuando quieras desde "Mis Mazos".</p>
+      <div class="hero-select-grid">${cardsHtml}</div>
+    </div>`;
+  app.querySelectorAll('.hero-card').forEach((el) => {
+    el.onclick = () => {
+      const faction = el.dataset.faction;
+      Store.grantStarterDeck(save, faction);
+      save.selectedFaction = faction;
+      persist();
+      startGuidedTutorialMatch(faction);
+    };
+  });
+}
+
+function renderHeroSelect() {
+  const cardsHtml = HEROES.map((hero) => {
+    const faction = FACTIONS[hero.faction];
+    const count = Store.deckCount(save, hero.faction);
+    const ready = count === Store.CONSTANTS.DECK_SIZE;
+    return `
+      <div class="hero-card theme-${faction.theme}" data-faction="${hero.faction}">
+        <div class="hero-card-faction">${faction.name}</div>
+        <div class="hero-card-name">${hero.name}</div>
+        <div class="hero-card-tagline">${faction.tagline}</div>
+        <div class="hero-card-special"><strong>${hero.special.label}:</strong> ${hero.special.text}</div>
+        <div class="hero-card-deck">Mazo: ${count}/${Store.CONSTANTS.DECK_SIZE}${ready ? '' : ' ⚠️'}</div>
+      </div>`;
+  }).join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>${onlineIntent ? 'Elegí tu héroe (online)' : 'Elegí tu héroe'}</h2></div>
+      <div class="hero-select-grid">${cardsHtml}</div>
+    </div>`;
+  document.getElementById('back').onclick = () => {
+    if (onlineIntent) {
+      onlineIntent = null;
+      go('onlineLobby');
+    } else {
+      go('home');
+    }
+  };
+  app.querySelectorAll('.hero-card').forEach((el) => {
+    el.onclick = () => {
+      const faction = el.dataset.faction;
+      if (Store.deckCount(save, faction) !== Store.CONSTANTS.DECK_SIZE) {
+        alert(`Tu mazo necesita exactamente ${Store.CONSTANTS.DECK_SIZE} cartas para jugar. Vamos a editarlo.`);
+        currentDeckFaction = faction;
+        go('deckbuilder');
+        return;
+      }
+      if (onlineIntent) startOnlineMatch(faction);
+      else startMatch(faction);
+    };
+  });
+}
+
+function renderDeckSelect() {
+  const rows = Object.values(FACTIONS)
+    .filter((faction) => HEROES.some((h) => h.faction === faction.id))
+    .map((faction) => {
+      const count = Store.deckCount(save, faction.id);
+      const complete = count === Store.CONSTANTS.DECK_SIZE;
+      const pct = Math.min(100, Math.round((count / Store.CONSTANTS.DECK_SIZE) * 100));
+      const hero = HEROES.find((h) => h.faction === faction.id);
+      const selected = save.selectedFaction === faction.id;
+      const selectTooltip = !complete
+        ? `Necesita ${Store.CONSTANTS.DECK_SIZE} cartas para poder jugarse`
+        : selected
+          ? 'Mazo seleccionado para jugar'
+          : 'Usar este mazo para jugar';
+      return `
+        <div class="deck-row theme-${faction.theme} ${selected ? 'selected' : ''}">
+          <button
+            class="deck-row-select"
+            data-select-faction="${faction.id}"
+            data-tooltip="${selectTooltip}"
+            ${complete ? '' : 'disabled'}
+          >${selected ? '✓' : ''}</button>
+          <div class="deck-row-body" data-open-faction="${faction.id}">
+            <div class="deck-row-top">
+              <div class="deck-row-names">
+                <span class="deck-row-faction">${faction.name}</span>
+                <span class="deck-row-hero">${hero ? hero.name : ''}</span>
+              </div>
+              <span class="deck-row-count ${complete ? 'complete' : ''}">${count}/${Store.CONSTANTS.DECK_SIZE}${complete ? ' ✓' : ''}</span>
+            </div>
+            <div class="deck-row-bar"><div class="deck-row-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
+          </div>
+        </div>`;
+    })
+    .join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen deck-select-screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Mis Mazos</h2></div>
+      <p class="hint">Cada mazo necesita exactamente ${Store.CONSTANTS.DECK_SIZE} cartas (máximo ${Store.CONSTANTS.MAX_COPIES} copias de cada una) para poder jugar. Marcá ✓ el que querés usar — ese es el que se juega al tocar "Jugar".</p>
+      <div class="faction-list">${rows}</div>
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  app.querySelectorAll('[data-open-faction]').forEach((el) => {
+    el.onclick = () => {
+      currentDeckFaction = el.dataset.openFaction;
+      go('deckbuilder');
+    };
+  });
+  app.querySelectorAll('[data-select-faction]').forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const faction = el.dataset.selectFaction;
+      if (Store.deckCount(save, faction) !== Store.CONSTANTS.DECK_SIZE) {
+        showToast(`Este mazo necesita ${Store.CONSTANTS.DECK_SIZE} cartas para poder seleccionarse.`);
+        return;
+      }
+      save.selectedFaction = faction;
+      persist();
+      renderDeckSelect();
+    };
+  });
+}
+
+function renderDeckbuilder() {
+  const faction = currentDeckFaction;
+  const count = Store.deckCount(save, faction);
+  const pct = Math.min(100, Math.round((count / Store.CONSTANTS.DECK_SIZE) * 100));
+  const complete = count === Store.CONSTANTS.DECK_SIZE;
+
+  const deckPoolSection = (pool, sectionFaction) => {
+    const ids = pool.map((c) => c.id).filter((id) => (save.collection[id] || 0) > 0);
+    if (!ids.length) return '';
+    const itemsHtml = ids
+      .map((id) => {
+        const card = getCard(id);
+        const inDeck = save.decks[faction][id] || 0;
+        const owned = save.collection[id];
+        const canAdd = Store.canAddToDeck(save, faction, id);
+        return `
+        <div class="collection-slot deck-slot">
+          ${cardVisual(card, inDeck > 0 ? 'in-deck' : '')}
+          <div class="deck-stepper">
+            <button class="stepper-btn" data-action="remove" data-id="${id}" ${inDeck === 0 ? 'disabled' : ''}>−</button>
+            <span class="stepper-count">${inDeck}/${owned}</span>
+            <button class="stepper-btn" data-action="add" data-id="${id}" ${canAdd ? '' : 'disabled'}>+</button>
+          </div>
+        </div>`;
+      })
+      .join('');
+    return `
+      <div class="faction-section theme-${sectionFaction.theme}">
+        <div class="faction-section-header">
+          <h3>${sectionFaction.name}</h3>
+          <span class="faction-section-tagline">${sectionFaction.tagline}</span>
+        </div>
+        <div class="card-grid">${itemsHtml}</div>
+      </div>`;
+  };
+
+  const sections =
+    deckPoolSection(cardsForFaction(faction), FACTIONS[faction]) +
+    deckPoolSection(cardsForFaction('neutral'), FACTIONS.neutral);
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen deck-select-screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>${FACTIONS[faction].name}</h2></div>
+      <div class="deck-progress">
+        <div class="deck-progress-label">${count}/${Store.CONSTANTS.DECK_SIZE} cartas${complete ? ' · Mazo completo ✓' : ''}</div>
+        <div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
+      </div>
+      ${sections}
+    </div>`;
+  document.getElementById('back').onclick = () => go('deckSelect');
+  app.querySelectorAll('[data-action="add"]').forEach((btn) => {
+    btn.onclick = () => {
+      Store.addToDeck(save, faction, btn.dataset.id);
+      persist();
+      renderDeckbuilder();
+    };
+  });
+  app.querySelectorAll('[data-action="remove"]').forEach((btn) => {
+    btn.onclick = () => {
+      Store.removeFromDeck(save, faction, btn.dataset.id);
+      persist();
+      renderDeckbuilder();
+    };
+  });
+}
+
+function renderCollection() {
+  const totalOwned = CARDS.filter((c) => (save.collection[c.id] || 0) > 0).length;
+  const totalPct = Math.round((totalOwned / CARDS.length) * 100);
+  const excessDust = CARDS.reduce((sum, c) => {
+    const excess = (save.collection[c.id] || 0) - Store.CONSTANTS.MAX_COPIES;
+    return excess > 0 ? sum + excess * (Store.CONSTANTS.DUST_VALUE[c.rarity] || 0) : sum;
+  }, 0);
+
+  const sections = Object.values(FACTIONS)
+    .map((faction) => {
+      const factionCards = cardsForFaction(faction.id);
+      const factionOwned = factionCards.filter((c) => (save.collection[c.id] || 0) > 0).length;
+      const cardsHtml = factionCards
+        .map((card) => {
+          const owned = save.collection[card.id] || 0;
+          const actionHtml =
+            owned > 0
+              ? `<button class="btn tiny dust-btn" data-disenchant="${card.id}" data-tooltip="Desencantar por ${Store.CONSTANTS.DUST_VALUE[card.rarity]} de polvo">✨+${Store.CONSTANTS.DUST_VALUE[card.rarity]}</button>`
+              : `<button class="btn tiny dust-btn" data-craft="${card.id}" ${(save.dust || 0) < Store.CONSTANTS.CRAFT_COST[card.rarity] ? 'disabled' : ''} data-tooltip="Craftear por ${Store.CONSTANTS.CRAFT_COST[card.rarity]} de polvo">✨${Store.CONSTANTS.CRAFT_COST[card.rarity]}</button>`;
+          return `<div class="collection-slot">${cardVisual(card, owned === 0 ? 'locked' : '')}<div class="owned-count">x${owned}</div>${actionHtml}</div>`;
+        })
+        .join('');
+      return `
+        <div class="faction-section theme-${faction.theme}">
+          <div class="faction-section-header">
+            <h3>${faction.name}</h3>
+            <span class="faction-section-tagline">${faction.tagline}</span>
+            <span class="faction-section-progress">${factionOwned}/${factionCards.length}</span>
+          </div>
+          <div class="card-grid">${cardsHtml}</div>
+        </div>`;
+    })
+    .join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Colección</h2></div>
+      <div class="deck-progress">
+        <div class="deck-progress-label">${totalOwned}/${CARDS.length} cartas conseguidas${totalOwned === CARDS.length ? ' · Colección completa ✓' : ''}</div>
+        <div class="deck-progress-bar"><div class="deck-progress-fill ${totalOwned === CARDS.length ? 'complete' : ''}" style="width:${totalPct}%"></div></div>
+      </div>
+      <button class="btn auto-disenchant-btn" id="auto-disenchant" ${excessDust > 0 ? '' : 'disabled'} data-tooltip="Desencanta toda copia por encima de ${Store.CONSTANTS.MAX_COPIES} de cada carta">
+        ✨ Desencantar excedentes${excessDust > 0 ? ` (+${excessDust})` : ''}
+      </button>
+      ${sections}
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  document.getElementById('auto-disenchant').onclick = () => {
+    const res = Store.disenchantExcess(save);
+    if (res.cardsAffected > 0) {
+      persist();
+      sfx.coin();
+      showToast(`+${res.totalDust} de polvo ✨ (${res.cardsAffected} carta${res.cardsAffected > 1 ? 's' : ''})`);
+      rerenderPreservingScroll(renderCollection);
+    }
+  };
+  app.querySelectorAll('[data-disenchant]').forEach((btn) => {
+    btn.onclick = () => {
+      const res = Store.disenchant(save, btn.dataset.disenchant);
+      if (res.ok) {
+        persist();
+        showToast(`+${res.dustGained} de polvo ✨`);
+        renderCollection();
+      }
+    };
+  });
+  app.querySelectorAll('[data-craft]').forEach((btn) => {
+    btn.onclick = () => {
+      const res = Store.craft(save, btn.dataset.craft);
+      if (res.ok) {
+        persist();
+        renderCollection();
+      } else if (res.reason === 'dust') {
+        showToast('No tenés suficiente polvo para craftear esta carta.');
+      }
+    };
+  });
+}
+
+const FACTION_PACK_ICON = { albura: '🕊️', ignara: '🔥', umbra: '🌑', terra: '⛰️' };
+
+function renderShop() {
+  const gemSkus = GEM_SKUS.map(
+    (sku) => `
+    <button class="btn sku" data-sku="${sku.id}">
+      <span>💎 ${sku.gems}</span><span class="price">${sku.priceLabel}</span>
+    </button>`
+  ).join('');
+  const coinSkus = COIN_SKUS.map(
+    (sku) => `
+    <button class="btn sku" data-coin-sku="${sku.id}">
+      <span>🪙 ${sku.coins}</span><span class="price">${sku.priceLabel}</span>
+    </button>`
+  ).join('');
+  const dustSkus = DUST_SKUS.map(
+    (sku) => `
+    <button class="btn sku" data-dust-sku="${sku.id}">
+      <span>✨ ${sku.dust}</span><span class="price">${sku.priceLabel}</span>
+    </button>`
+  ).join('');
+  const themedPacksHtml = Object.values(FACTIONS)
+    .filter((f) => f.id !== 'neutral')
+    .map((faction) => {
+      const packId = `${faction.id}_pack`;
+      const pack = PACKS[packId];
+      return `
+      <button class="btn pack theme-${faction.theme}" data-buy-pack="${packId}">
+        <div class="pack-icon">${FACTION_PACK_ICON[faction.id] || '📦'}</div>
+        <div>${pack.label}</div>
+        <div class="price">🪙 ${pack.cost}</div>
+      </button>`;
+    })
+    .join('');
+  const welcomeOfferHtml = save.welcomeOfferClaimed
+    ? ''
+    : `
+    <div class="welcome-offer">
+      <div class="welcome-offer-badge">¡Oferta única!</div>
+      <h3>${WELCOME_OFFER.label}</h3>
+      <div class="welcome-offer-rewards">🪙 ${WELCOME_OFFER.coins} &nbsp;+&nbsp; 💎 ${WELCOME_OFFER.gems}</div>
+      <button class="btn primary" id="buy-welcome-offer">Comprar por ${WELCOME_OFFER.priceLabel}</button>
+    </div>`;
+
+  const dailyDeals = DailyDeals.ensureDailyDeals(save).deals;
+  const dailyDealsHtml = dailyDeals
+    .map((deal) => {
+      const card = getCard(deal.cardId);
+      const purchased = DailyDeals.isDealPurchased(save, deal.cardId);
+      const priceIcon = deal.currency === 'coins' ? '🪙' : '💎';
+      return `
+      <div class="daily-deal-slot">
+        ${cardVisual(card)}
+        <button class="btn ${purchased ? '' : 'primary'} small daily-deal-btn" data-daily-deal="${deal.cardId}" ${purchased ? 'disabled' : ''}>
+          ${purchased ? 'Comprado ✓' : `${priceIcon} ${deal.amount}`}
+        </button>
+      </div>`;
+    })
+    .join('');
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Tienda</h2></div>
+
+      ${welcomeOfferHtml}
+
+      <h3>🗓️ Tienda del Día</h3>
+      <p class="hint">Tres cartas al azar: común, rara y una premium (normalmente épica, rara vez legendaria). Se renuevan mañana.</p>
+      <div class="daily-deal-row">${dailyDealsHtml}</div>
+
+      <h3>Sobres</h3>
+      <div class="pack-row">
+        <button class="btn pack" id="buy-coin-pack">
+          <div class="pack-icon">📦</div>
+          <div>${PACKS.coin_pack.label}</div>
+          <div class="price">🪙 ${PACKS.coin_pack.cost}</div>
+        </button>
+        <button class="btn pack" id="buy-gem-pack">
+          <div class="pack-icon">🎁</div>
+          <div>${PACKS.gem_pack.label}</div>
+          <div class="price">💎 ${PACKS.gem_pack.cost}</div>
+        </button>
+        <button class="btn pack" id="buy-legendary-pack">
+          <div class="pack-icon">🏆</div>
+          <div>${PACKS.legendary_pack.label}</div>
+          <div class="price">💎 ${PACKS.legendary_pack.cost}</div>
+        </button>
+      </div>
+
+      <h3>Sobres de Facción</h3>
+      <p class="hint">Garantizan cartas sólo de esa facción — sin cartas de otra facción ni del Gremio Errante. Por eso cuestan 1.5x el Sobre de Bronce.</p>
+      <div class="faction-pack-grid">${themedPacksHtml}</div>
+
+      <button class="btn ad" id="watch-ad">📺 Ver anuncio → +${AD_REWARD.coins} monedas</button>
+
+      <h3>Monedas (compra simulada)</h3>
+      <div class="sku-grid">${coinSkus}</div>
+
+      <h3>Gemas (compra simulada)</h3>
+      <p class="hint">Demo de UX de compra. Para producción hay que integrar Stripe / App Store / Google Play Billing.</p>
+      <div class="sku-grid">${gemSkus}</div>
+
+      <h3>Polvo (compra simulada)</h3>
+      <p class="hint">Precio elevado a propósito: el polvo craftea cartas específicas, así que no reemplaza a los sobres como forma principal de completar la colección.</p>
+      <div class="sku-grid">${dustSkus}</div>
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  document.getElementById('buy-coin-pack').onclick = () => tryBuyPack('coin_pack');
+  document.getElementById('buy-gem-pack').onclick = () => tryBuyPack('gem_pack');
+  document.getElementById('buy-legendary-pack').onclick = () => tryBuyPack('legendary_pack');
+  document.getElementById('watch-ad').onclick = () => watchAd();
+  const welcomeBtn = document.getElementById('buy-welcome-offer');
+  if (welcomeBtn) welcomeBtn.onclick = () => buyWelcomeOffer();
+  app.querySelectorAll('[data-sku]').forEach((btn) => {
+    btn.onclick = () => mockPurchase(btn.dataset.sku);
+  });
+  app.querySelectorAll('[data-coin-sku]').forEach((btn) => {
+    btn.onclick = () => mockPurchaseCoins(btn.dataset.coinSku);
+  });
+  app.querySelectorAll('[data-dust-sku]').forEach((btn) => {
+    btn.onclick = () => mockPurchaseDust(btn.dataset.dustSku);
+  });
+  app.querySelectorAll('[data-buy-pack]').forEach((btn) => {
+    btn.onclick = () => tryBuyPack(btn.dataset.buyPack);
+  });
+  app.querySelectorAll('[data-daily-deal]').forEach((btn) => {
+    btn.onclick = () => buyDailyDeal(btn.dataset.dailyDeal);
+  });
+}
+
+function buyDailyDeal(cardId) {
+  const result = DailyDeals.buyDeal(save, cardId);
+  if (!result.ok) {
+    if (result.reason === 'balance') showToast('Saldo insuficiente para esta carta.');
+    return;
+  }
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function tryBuyPack(packId) {
+  const pack = PACKS[packId];
+  const balance = pack.currency === 'coins' ? save.coins : save.gems;
+  if (balance < pack.cost) {
+    showToast('Saldo insuficiente. Podés ganar monedas jugando o comprar gemas en la tienda.');
+    return;
+  }
+  if (pack.currency === 'coins') save.coins -= pack.cost;
+  else save.gems -= pack.cost;
+  persist();
+  pendingPackId = packId;
+  go('packOpen');
+}
+
+function buyWelcomeOffer() {
+  if (save.welcomeOfferClaimed) return;
+  save.coins += WELCOME_OFFER.coins;
+  save.gems += WELCOME_OFFER.gems;
+  save.welcomeOfferClaimed = true;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function renderPackOpen() {
+  const pack = PACKS[pendingPackId];
+  const isPremium = pack.currency === 'gems';
+  app.innerHTML = `
+    ${header()}
+    <div class="screen pack-open-screen">
+      <div class="pack-stage">
+        <div class="pack-envelope ${isPremium ? 'premium' : 'bronze'}" id="pack-envelope">
+          <div class="pack-shine"></div>
+          <div class="pack-icon">${isPremium ? '🎁' : '📦'}</div>
+        </div>
+      </div>
+      <p class="pack-hint">Arrastrá el sobre para abrirlo ✨</p>
+    </div>`;
+
+  const envelope = document.getElementById('pack-envelope');
+  let opened = false;
+
+  envelope.addEventListener('click', () => {
+    if (!opened) {
+      opened = true;
+      openPendingPack(envelope);
+    }
+  });
+
+  envelope.addEventListener('pointerdown', (e) => {
+    if (opened) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    envelope.style.animation = 'none';
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      const dist = Math.hypot(dx, dy);
+      envelope.style.transform = `translate(${dx * 0.4}px, ${dy * 0.4}px) rotate(${dx * 0.05}deg)`;
+      if (!opened && dist > 55) {
+        opened = true;
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        envelope.style.animation = '';
+        envelope.style.transform = '';
+        openPendingPack(envelope);
+      }
+    };
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      if (!opened) {
+        envelope.style.transform = '';
+        envelope.style.animation = '';
+      }
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
+}
+
+function openPendingPack(envelope) {
+  const packId = pendingPackId;
+  envelope.classList.add('tearing');
+  spawnPackBurst(envelope);
+  setTimeout(() => {
+    const cards = openPack(packId);
+    Store.addCardsToCollection(save, cards);
+    Missions.addMissionProgress(save, 'packsOpened', 1);
+    persist();
+    sfx.coin();
+    lastPackReveal = cards;
+    pendingPackId = null;
+    go('reveal');
+  }, 420);
+}
+
+function spawnPackBurst(envelope) {
+  const rect = envelope.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const burst = document.createElement('div');
+  burst.className = 'pack-burst';
+  burst.style.left = `${cx}px`;
+  burst.style.top = `${cy}px`;
+  document.body.appendChild(burst);
+  for (let i = 0; i < 14; i++) {
+    const spark = document.createElement('div');
+    spark.className = 'pack-spark';
+    const angle = (i / 14) * Math.PI * 2;
+    spark.style.setProperty('--dx', `${Math.cos(angle) * 90}px`);
+    spark.style.setProperty('--dy', `${Math.sin(angle) * 90}px`);
+    burst.appendChild(spark);
+  }
+  setTimeout(() => burst.remove(), 700);
+}
+
+function watchAd() {
+  app.innerHTML = `${header()}<div class="screen"><h2>📺 Reproduciendo anuncio…</h2><p>(simulado)</p></div>`;
+  setTimeout(() => {
+    save.coins += AD_REWARD.coins;
+    Missions.addMissionProgress(save, 'adsWatched', 1);
+    persist();
+    sfx.coin();
+    go('shop');
+  }, 1500);
+}
+
+function mockPurchase(skuId) {
+  const sku = GEM_SKUS.find((s) => s.id === skuId);
+  save.gems += sku.gems;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function mockPurchaseCoins(skuId) {
+  const sku = COIN_SKUS.find((s) => s.id === skuId);
+  save.coins += sku.coins;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function mockPurchaseDust(skuId) {
+  const sku = DUST_SKUS.find((s) => s.id === skuId);
+  save.dust = (save.dust || 0) + sku.dust;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function renderReveal() {
+  const cardsHtml = lastPackReveal
+    .map((c, i) => {
+      const notable = c.rarity === 'epic' || c.rarity === 'legendary' ? 'notable-pull' : '';
+      const baseDelay = i * 0.15;
+      const delayStyle = notable ? `${baseDelay}s, ${baseDelay + 0.5}s` : `${baseDelay}s`;
+      return `<div class="reveal-slot reveal-burst ${notable}" style="animation-delay:${delayStyle};--rarity-color:${RARITY_COLORS[c.rarity]}">${cardVisual(c, 'reveal-card')}</div>`;
+    })
+    .join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <h2>¡Cartas obtenidas!</h2>
+      <div class="reveal-grid">${cardsHtml}</div>
+      <button class="btn primary" id="continue">Continuar</button>
+    </div>`;
+  document.getElementById('continue').onclick = () => go('shop');
+}
+
+// ---------------- Match lifecycle ----------------
+
+// The deck selected in "Mis Mazos" (save.selectedFaction), falling back to
+// the first faction with a complete deck for a player who's never opened
+// that screen — every faction starts with a full starter deck, so a brand
+// new player can still hit the single home "Jugar" button immediately.
+function resolvePlayFaction() {
+  if (save.selectedFaction && Store.deckCount(save, save.selectedFaction) === Store.CONSTANTS.DECK_SIZE) {
+    return save.selectedFaction;
+  }
+  return Object.keys(FACTIONS).find((f) => f !== 'neutral' && Store.deckCount(save, f) === Store.CONSTANTS.DECK_SIZE) || null;
+}
+
+// The home screen's "Jugar vs IA"/"Jugar Online" popup both resolve to
+// whichever deck is selected in "Mis Mazos" and skip hero-select entirely.
+function playSelectedDeck(mode) {
+  const faction = resolvePlayFaction();
+  if (!faction) {
+    showToast('Elegí un mazo completo en "Mis Mazos" antes de jugar.');
+    go('deckSelect');
+    return;
+  }
+  save.selectedFaction = faction;
+  persist();
+  if (mode === 'ai') {
+    startMatch(faction);
+  } else {
+    onlineIntent = { mode: 'quick' };
+    startOnlineMatch(faction);
+  }
+}
+
+function startGuidedTutorialMatch(faction) {
+  tutorialCoachActive = true;
+  tutorialProgress = { heroAction: false, deployed: false, endedTurn: false, attacked: false };
+  startMatch(faction);
+}
+
+function startMatch(faction) {
+  // 'neutral' has no hero (see cards.js) — it must never be picked as the
+  // AI's own faction, only mixed into decks as filler.
+  const aiFactions = Object.keys(FACTIONS).filter((f) => f !== faction && f !== 'neutral');
+  const aiFaction = aiFactions[Math.floor(Math.random() * aiFactions.length)];
+  const playerHero = HEROES.find((h) => h.faction === faction);
+  const aiHero = HEROES.find((h) => h.faction === aiFaction);
+  const aiDeck = Store.buildAiDeck(aiFaction);
+  battle = newGame(save.decks[faction], playerHero.id, aiDeck, aiHero.id);
+  onlineRoom = null;
+  prevOccupancy = new Set();
+  selectedAttacker = null;
+  pendingPlacement = null;
+  pendingTarget = null;
+  battleMenuOpen = false;
+  forfeitConfirmOpen = false;
+  endTurnConfirmOpen = false;
+  openPile = null;
+  go('battle');
+}
+
+function endMatch(winner) {
+  // The guided coach only ever runs on a fresh onboarding match — if that
+  // match ends (win, loss, or abandon) before the player reached the coach's
+  // own "Entendido" step, mark it done anyway so they're never trapped back
+  // into the guided flow on their next battle.
+  if (tutorialCoachActive) {
+    tutorialCoachActive = false;
+    save.guidedTutorialDone = true;
+  }
+  const trophyResult = pendingTrophyResult;
+  pendingTrophyResult = null;
+  onlineRoom = null;
+  const won = winner === 'p1';
+  const reward = matchReward(won);
+  save.coins += reward.coins;
+  Missions.addMissionProgress(save, 'battles', 1);
+  if (won) Missions.addMissionProgress(save, 'wins', 1);
+  Missions.addMissionProgress(save, 'heroDamage', battle.stats.heroDamageDealt);
+  Missions.addMissionProgress(save, 'creaturesKilled', battle.stats.creaturesKilled);
+  Missions.addMissionProgress(save, 'creaturesPlayed', battle.stats.creaturesPlayed);
+  SeasonPass.addSeasonXp(save, won ? SeasonPass.XP_REWARDS.matchWin : SeasonPass.XP_REWARDS.matchLoss);
+  if (trophyResult) Ladder.syncTrophies(save, trophyResult.trophies);
+  persist();
+  if (won) {
+    sfx.win();
+    vibrate([0, 40, 40, 40, 80]);
+  } else {
+    sfx.lose();
+    vibrate(60);
+  }
+  const trophyLine = trophyResult
+    ? `<p class="trophy-delta ${trophyResult.delta >= 0 ? 'positive' : 'negative'}">${trophyResult.delta >= 0 ? '+' : ''}${trophyResult.delta} 🏆 (${trophyResult.trophies} total)</p>`
+    : '';
+  app.innerHTML = `
+    ${header()}
+    <div class="screen center">
+      <h1>${won ? '🏆 ¡Ganaste!' : winner === 'draw' ? '🤝 Empate' : '💀 Perdiste'}</h1>
+      <p>+${reward.coins} monedas</p>
+      ${trophyLine}
+      <button class="btn primary" id="home">Volver al menú</button>
+    </div>`;
+  document.getElementById('home').onclick = () => go('home');
+}
+
+// ---------------- Online multiplayer ----------------
+
+function renderOnlineLobby() {
+  const account = Net.getAccount();
+  const err = onlineStatus && onlineStatus.kind === 'error' ? onlineStatus.message : null;
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Jugar Online</h2></div>
+      <p class="hint">${account ? `Conectado como <strong>${escapeHtml(account.username)}</strong>` : 'Conectando al servidor…'}</p>
+      ${err ? `<p class="online-error">${err}</p>` : ''}
+      <button class="btn primary big" id="quick-match">⚡ Partida rápida</button>
+      <button class="btn" id="create-room">➕ Crear sala privada</button>
+      <div class="online-join-row">
+        <input id="join-code" class="join-code-input" placeholder="Código de sala" maxlength="5" autocapitalize="characters">
+        <button class="btn" id="join-room">Unirse</button>
+      </div>
+    </div>`;
+  document.getElementById('back').onclick = () => {
+    onlineIntent = null;
+    onlineStatus = null;
+    go('home');
+  };
+  document.getElementById('quick-match').onclick = () => {
+    onlineIntent = { mode: 'quick' };
+    go('heroSelect');
+  };
+  document.getElementById('create-room').onclick = () => {
+    onlineIntent = { mode: 'create' };
+    go('heroSelect');
+  };
+  document.getElementById('join-room').onclick = () => {
+    const input = document.getElementById('join-code');
+    const code = input.value.trim().toUpperCase();
+    if (!code) {
+      input.focus();
+      return;
+    }
+    onlineIntent = { mode: 'join', code };
+    go('heroSelect');
+  };
+}
+
+function renderOnlineWaiting() {
+  const status = onlineStatus || { kind: 'connecting' };
+  let message = 'Conectando…';
+  if (status.kind === 'queued') message = 'Buscando un rival…';
+  else if (status.kind === 'creating') message = 'Creando sala…';
+  else if (status.kind === 'waitingCode') message = 'Compartí este código con tu rival:';
+  else if (status.kind === 'joining') message = 'Uniéndose a la sala…';
+
+  app.innerHTML = `
+    ${header()}
+    <div class="screen center online-waiting">
+      <div class="spinner"></div>
+      <p>${message}</p>
+      ${status.kind === 'waitingCode' ? `<div class="room-code">${status.code}</div>` : ''}
+      <button class="btn" id="cancel-online">Cancelar</button>
+    </div>`;
+  document.getElementById('cancel-online').onclick = () => {
+    Net.cancelQuickMatch();
+    onlineIntent = null;
+    onlineStatus = null;
+    go('home');
+  };
+}
+
+async function startOnlineMatch(faction) {
+  const intent = onlineIntent;
+  onlineStatus = { kind: 'connecting' };
+  screen = 'onlineWaiting';
+  render();
+
+  try {
+    await Net.connect();
+  } catch {
+    onlineIntent = null;
+    onlineStatus = { kind: 'error', message: 'No se pudo conectar con el servidor de partidas online. ¿Está corriendo?' };
+    screen = 'onlineLobby';
+    render();
+    return;
+  }
+
+  const deck = save.decks[faction];
+  if (intent.mode === 'quick') {
+    onlineStatus = { kind: 'queued' };
+    Net.quickMatch(faction, deck);
+  } else if (intent.mode === 'create') {
+    onlineStatus = { kind: 'creating' };
+    Net.createRoom(faction, deck);
+  } else if (intent.mode === 'join') {
+    onlineStatus = { kind: 'joining' };
+    Net.joinRoom(intent.code, faction, deck);
+  }
+  render();
+}
+
+// Caches the parts of a server account we display without a live connection
+// (topbar name chip, profile stats) into `save`, mirroring the existing
+// save.trophies caching so they survive offline/first-paint before any
+// network round trip resolves.
+function syncAccountToSave(account) {
+  if (!account) return;
+  save.username = account.username;
+  save.wins = account.wins || 0;
+  save.losses = account.losses || 0;
+  Ladder.syncTrophies(save, account.trophies);
+  persist();
+}
+
+function setupNetListeners() {
+  Net.on('identified', (msg) => {
+    syncAccountToSave(msg.account);
+    if (screen === 'onlineLobby' || screen === 'profile') render();
+  });
+  Net.on('roomCreated', (msg) => {
+    onlineStatus = { kind: 'waitingCode', code: msg.code };
+    render();
+  });
+  Net.on('queued', () => {
+    onlineStatus = { kind: 'queued' };
+    render();
+  });
+  Net.on('matchStart', (msg) => {
+    battle = msg.state;
+    onlineRoom = { code: msg.code };
+    onlineIntent = null;
+    onlineStatus = null;
+    prevOccupancy = new Set();
+    selectedAttacker = null;
+    pendingPlacement = null;
+    pendingTarget = null;
+    battleMenuOpen = false;
+    forfeitConfirmOpen = false;
+    endTurnConfirmOpen = false;
+    openPile = null;
+    screen = 'battle';
+    render();
+  });
+  Net.on('step', (msg) => {
+    if (!onlineRoom) return;
+    if (msg.step && msg.step.side === 'p2') animateOpponentStep(msg.step);
+    battle = msg.state;
+    render();
+  });
+  Net.on('matchEnd', (msg) => {
+    if (!onlineRoom) return;
+    pendingTrophyResult = { trophies: msg.trophies, delta: msg.trophyDelta };
+    battle = msg.state;
+    render(); // renderBattle() finds battle.winner set and routes into endMatch()
+  });
+  Net.on('opponentDisconnected', (msg) => {
+    if (!onlineRoom) return;
+    const secs = Math.round((msg.graceMs || 30000) / 1000);
+    showAiToast(`Tu rival se desconectó. Si no vuelve en ${secs}s, ganás la partida.`);
+  });
+  Net.on('opponentReconnected', () => {
+    if (!onlineRoom) return;
+    showAiToast('Tu rival volvió a conectarse.');
+  });
+  Net.on('error', (msg) => {
+    if (screen === 'onlineLobby' || screen === 'onlineWaiting') {
+      onlineIntent = null;
+      onlineStatus = { kind: 'error', message: msg.message };
+      screen = 'onlineLobby';
+      render();
+    } else {
+      showAiToast(msg.message);
+    }
+  });
+}
+
+// ---------------- Battle screen ----------------
+
+function forEachOccupied(state, side, fn) {
+  state[side].battlefield.forEach((lane, laneIndex) => {
+    if (lane.front) fn(laneIndex, 'front');
+    if (lane.back) fn(laneIndex, 'back');
+  });
+}
+
+function computeHighlights(state) {
+  const set = new Set();
+  const moveSet = new Set();
+  let face = null;
+
+  if (selectedAttacker) {
+    const creature = state.p1.battlefield[selectedAttacker.laneIndex][selectedAttacker.row];
+    if (creature) {
+      const card = getCard(creature.cardId);
+      const options = getValidAttackTargets(state, 'p1', selectedAttacker.laneIndex, card.placement);
+      for (const o of options) {
+        if (o.type === 'face') face = 'p2';
+        else set.add(`p2:${selectedAttacker.laneIndex}:${o.row}`);
+      }
+      const moveOptions = getValidMoveTargets(state, 'p1', selectedAttacker.laneIndex, selectedAttacker.row, card.placement);
+      for (const m of moveOptions) moveSet.add(`p1:${m.laneIndex}:${m.row}`);
+    }
+  } else if (pendingTarget) {
+    const card = pendingTarget.card;
+    if (card.target === 'ally_creature') {
+      forEachOccupied(state, 'p1', (lane, row) => set.add(`p1:${lane}:${row}`));
+    } else if (card.target === 'enemy_creature') {
+      forEachOccupied(state, 'p2', (lane, row) => set.add(`p2:${lane}:${row}`));
+    } else if (card.target === 'enemy_any') {
+      forEachOccupied(state, 'p2', (lane, row) => set.add(`p2:${lane}:${row}`));
+      face = 'p2';
+    }
+  } else if (pendingPlacement) {
+    const card = pendingPlacement.card;
+    const rows = card.placement === 'melee' ? ['front'] : card.placement === 'shooter' ? ['back'] : ['front', 'back'];
+    for (let lane = 0; lane < 4; lane++) {
+      for (const row of rows) {
+        if (!state.p1.battlefield[lane][row]) set.add(`p1:${lane}:${row}`);
+      }
+    }
+  }
+  return { set, moveSet, face };
+}
+
+function slotHtml(state, side, laneIndex, row, highlights) {
+  const creature = state[side].battlefield[laneIndex][row];
+  const key = `${side}:${laneIndex}:${row}`;
+  const isHighlighted = highlights.set.has(key);
+  const isMoveTarget = highlights.moveSet.has(key);
+
+  if (!creature) {
+    return `<div class="lane-slot empty ${isHighlighted ? 'legal-target' : ''} ${isMoveTarget ? 'legal-move-target' : ''}" data-side="${side}" data-lane="${laneIndex}" data-row="${row}"></div>`;
+  }
+
+  const card = getCard(creature.cardId);
+  const occKey = `${side}:${laneIndex}:${row}:${creature.instanceId}`;
+  const isNew = !prevOccupancy.has(occKey);
+  const isSelected = side === 'p1' && selectedAttacker && selectedAttacker.laneIndex === laneIndex && selectedAttacker.row === row;
+  const canAttackNow = side === 'p1' && creature.canAttack && !pendingPlacement && !pendingTarget && state.active === 'p1';
+  const tooltipLines = [
+    `${card.name} — ${FACTIONS[card.faction].name}`,
+    `Tipo: Criatura (${placementLabel(card.placement)})`,
+    `Ataque ${creature.atk} · Contraataque ${creature.retaliate} · Vida ${creature.life}`,
+  ];
+  if (card.text) tooltipLines.push(card.text);
+
+  return `
+    <div class="lane-slot occupied ${isHighlighted ? 'legal-target' : ''}" data-side="${side}" data-lane="${laneIndex}" data-row="${row}">
+      <div class="board-card rarity-${card.rarity} ${canAttackNow ? 'can-attack' : ''} ${isSelected ? 'selected' : ''} ${isNew ? 'card-enter' : ''}" style="--rarity-color:${RARITY_COLORS[card.rarity]}" data-tooltip="${escapeAttr(tooltipLines.join('\n'))}">
+        <div class="card-art small">${cardArtSVG(card)}</div>
+        <div class="card-stats"><span class="atk">${creature.atk}</span><span class="ret">${creature.retaliate}</span><span class="life">${creature.life}</span></div>
+      </div>
+    </div>`;
+}
+
+function battlefieldHtml(state, highlights) {
+  const rows = [
+    { side: 'p2', row: 'back' },
+    { side: 'p2', row: 'front' },
+    { side: 'p1', row: 'front' },
+    { side: 'p1', row: 'back' },
+  ];
+  return `<div class="lanes-grid">${rows
+    .map(({ side, row }) => `<div class="lane-row">${[0, 1, 2, 3].map((lane) => slotHtml(state, side, lane, row, highlights)).join('')}</div>`)
+    .join('')}</div>`;
+}
+
+function pileTooltip(label, ids) {
+  if (!ids.length) return `${label}\nVacío`;
+  return `${label} (${ids.length})\nTocá para ver las cartas`;
+}
+
+function pileHtml(kind, icon, label, ids, side) {
+  return `
+    <div class="pile ${kind}" data-side="${side}" data-kind="${kind}" data-tooltip="${escapeAttr(pileTooltip(label, ids))}">
+      <span class="pile-icon">${icon}</span>
+      <span class="pile-count">${ids.length}</span>
+    </div>`;
+}
+
+function pilesHtml(state) {
+  return `
+    <div class="piles-sidebar">
+      <div class="pile-group">
+        ${pileHtml('dead-zone', '💀', 'Cementerio', state.p2.discard, 'p2')}
+        ${pileHtml('exile-zone', '🌀', 'Exilio', state.p2.exile, 'p2')}
+      </div>
+      <div class="pile-group">
+        ${pileHtml('dead-zone', '💀', 'Cementerio', state.p1.discard, 'p1')}
+        ${pileHtml('exile-zone', '🌀', 'Exilio', state.p1.exile, 'p1')}
+      </div>
+    </div>`;
+}
+
+function pileModalHtml(state) {
+  if (!openPile) return '';
+  const { side, kind } = openPile;
+  const ids = kind === 'dead-zone' ? state[side].discard : state[side].exile;
+  const label = kind === 'dead-zone' ? 'Cementerio' : 'Exilio';
+  const sideLabel = side === 'p1' ? 'tuyo' : 'del rival';
+  return `
+    <div class="modal-overlay" id="pile-modal-overlay">
+      <div class="modal-box pile-modal">
+        <div class="pile-modal-header">
+          <h3>${label} (${sideLabel}) · ${ids.length}</h3>
+          <button class="btn icon" id="pile-modal-close">✕</button>
+        </div>
+        ${
+          ids.length
+            ? `<div class="card-grid pile-modal-grid">${ids.map((id) => cardVisual(getCard(id))).join('')}</div>`
+            : `<p>Vacío por ahora.</p>`
+        }
+      </div>
+    </div>`;
+}
+
+const ATTR_ICONS = { might: '⚔️', magic: '🔮', destiny: '🎲' };
+
+function attrFullLabel(attr) {
+  return attr === 'might' ? 'Fuerza' : attr === 'magic' ? 'Magia' : 'Destino';
+}
+
+function heroPanelHtml(state, side, highlights) {
+  const p = state[side];
+  const hero = getHero(p.heroId);
+  const isEnemy = side === 'p2';
+  const faceHighlight = highlights.face === side ? 'legal-target' : '';
+  const busy = pendingPlacement || pendingTarget;
+
+  const heroActionAvailable = state.active === 'p1' && !p.heroActionUsed && !busy;
+  const attrRow = !isEnemy
+    ? ['might', 'magic', 'destiny']
+        .map((attr) => {
+          return `<span class="tip-wrap" data-tooltip="Aumenta ${attrFullLabel(attr)} en 1"><button class="attr-pip ${heroActionAvailable ? 'action-available' : ''}" data-attr="${attr}" ${heroActionAvailable ? '' : 'disabled'}>${ATTR_ICONS[attr]} ${p[attr]}</button></span>`;
+        })
+        .join('') +
+      `<span class="tip-wrap" data-tooltip="${escapeAttr(hero.special.text)}"><button class="btn special-btn ${heroActionAvailable ? 'action-available' : ''}" id="hero-special" ${heroActionAvailable ? '' : 'disabled'}>⭐</button></span>`
+    : ['might', 'magic', 'destiny']
+        .map((attr) => `<span class="attr-pip readonly" data-tooltip="${attrFullLabel(attr)}: ${p[attr]}">${ATTR_ICONS[attr]} ${p[attr]}</span>`)
+        .join('');
+
+  return `
+    <div class="hero-panel ${isEnemy ? 'enemy' : 'player'}">
+      <div class="hero-face ${faceHighlight}" data-side="${side}">
+        <div class="hp-badge" data-tooltip="Puntos de vida">❤️ ${p.hp}</div>
+        <div class="resource-badge" data-tooltip="Recursos disponibles este turno">🔷 ${p.resource}/${p.resourceMax}</div>
+        <div class="deck-count" data-tooltip="Cartas restantes en el mazo">🂠 ${p.deck.length}</div>
+        <div class="deck-count" data-tooltip="Cartas en la mano">✋ ${p.hand.length}</div>
+      </div>
+      <div class="attr-row">${attrRow}</div>
+    </div>`;
+}
+
+function handHtml(state) {
+  const isPlayerTurn = state.active === 'p1';
+  return state.p1.hand
+    .map((cardId, idx) => {
+      const card = getCard(cardId);
+      const attrValue = card.type === 'creature' ? state.p1.might : card.type === 'spell' ? state.p1.magic : state.p1.destiny;
+      const isChosen = (pendingPlacement && pendingPlacement.idx === idx) || (pendingTarget && pendingTarget.idx === idx);
+      const playable = isPlayerTurn && card.cost <= state.p1.resource && attrValue >= card.requirement && (!pendingPlacement && !pendingTarget || isChosen);
+      return `<div class="hand-card ${playable ? 'playable' : 'unplayable'} ${isChosen ? 'chosen' : ''}" data-idx="${idx}">${cardVisual(card)}</div>`;
+    })
+    .join('');
+}
+
+function turnLabel(state) {
+  if (pendingPlacement) return 'Elegí una casilla';
+  if (pendingTarget) return 'Elegí un objetivo';
+  if (selectedAttacker) return 'Atacá o movete a otra casilla';
+  return state.active === 'p1' ? 'Tu turno' : 'Turno rival…';
+}
+
+function updateOccupancy(state) {
+  const next = new Set();
+  for (const side of ['p1', 'p2']) {
+    state[side].battlefield.forEach((lane, laneIndex) => {
+      for (const row of ['front', 'back']) {
+        const c = lane[row];
+        if (c) next.add(`${side}:${laneIndex}:${row}:${c.instanceId}`);
+      }
+    });
+  }
+  prevOccupancy = next;
+}
+
+function countReadyCreatures(player) {
+  let count = 0;
+  for (const lane of player.battlefield) {
+    if (lane.front && lane.front.canAttack) count++;
+    if (lane.back && lane.back.canAttack) count++;
+  }
+  return count;
+}
+
+function battleMenuHtml() {
+  return `
+    <div class="battle-menu-wrap">
+      <button class="battle-menu-btn" id="battle-menu-btn">☰</button>
+      ${
+        battleMenuOpen
+          ? `<div class="battle-menu-dropdown">
+               ${onlineRoom ? `<div class="battle-menu-online-badge">🌐 Partida online · Sala ${onlineRoom.code}</div>` : ''}
+               <button class="battle-menu-item" id="battle-sound-toggle">${isSoundEnabled() ? '🔊 Sonido: activado' : '🔇 Sonido: apagado'}</button>
+               <button class="battle-menu-item" id="battle-haptics-toggle">${isHapticsEnabled() ? '📳 Vibración: activada' : '📴 Vibración: apagada'}</button>
+               <button class="battle-menu-item danger" id="forfeit-btn">🏳️ Abandonar partida</button>
+               <button class="battle-menu-item" id="close-menu-btn">✕ Cerrar</button>
+             </div>`
+          : ''
+      }
+    </div>
+    ${
+      forfeitConfirmOpen
+        ? `<div class="modal-overlay" id="forfeit-overlay">
+             <div class="modal-box">
+               <p>¿Seguro que querés abandonar la partida?<br>Se cuenta como derrota.</p>
+               <div class="modal-actions">
+                 <button class="btn" id="forfeit-cancel">Cancelar</button>
+                 <button class="btn danger" id="forfeit-confirm">Abandonar</button>
+               </div>
+             </div>
+           </div>`
+        : ''
+    }
+    ${
+      endTurnConfirmOpen
+        ? `<div class="modal-overlay" id="end-turn-overlay">
+             <div class="modal-box">
+               <p>Che, ${endTurnWarningText()}. ¿Termino el turno igual?</p>
+               <div class="modal-actions">
+                 <button class="btn" id="end-turn-cancel">Cancelar</button>
+                 <button class="btn primary" id="end-turn-confirm">Terminar turno</button>
+               </div>
+             </div>
+           </div>`
+        : ''
+    }`;
+}
+
+function endTurnWarningText() {
+  const parts = [];
+  if (!battle.p1.heroActionUsed) parts.push('no usaste tu acción de héroe (subir un atributo o tu especial)');
+  const readyCreatures = countReadyCreatures(battle.p1);
+  if (readyCreatures > 0) parts.push(`tenés ${readyCreatures} criatura${readyCreatures > 1 ? 's' : ''} que todavía puede${readyCreatures > 1 ? 'n' : ''} actuar`);
+  return parts.join(' y ');
+}
+
+function tutorialCoachStepInfo(state) {
+  if (!tutorialCoachActive || !tutorialProgress) return null;
+
+  // Latch each milestone the first time it's true — heroActionUsed and an
+  // empty battlefield are both things that legitimately recur every turn as
+  // normal play (heroActionUsed resets each turn, a board can empty out),
+  // so re-checking the raw field on turn 2+ would wrongly send the player
+  // back to a lesson they already completed on turn 1.
+  if (!tutorialProgress.heroAction && state.p1.heroActionUsed) tutorialProgress.heroAction = true;
+  if (!tutorialProgress.deployed && state.p1.battlefield.some((lane) => lane.front || lane.back)) tutorialProgress.deployed = true;
+  if (!tutorialProgress.endedTurn && state.turn > 1) tutorialProgress.endedTurn = true;
+
+  // Hero action first: every starter card needs at least level 1 in its
+  // attribute (Fuerza/Magia/Destino), and that attribute starts at 0 —
+  // nothing in hand is legal to deploy until it's leveled up once.
+  if (!tutorialProgress.heroAction) {
+    return { text: '👉 Empezá por tu acción de héroe: subí un atributo (Fuerza, Magia o Destino) o usá tu especial — lo necesitás para poder jugar tus cartas.' };
+  }
+  if (!tutorialProgress.deployed) {
+    return { text: '👉 Ahora arrastrá una carta de criatura de tu mano a una casilla libre del campo para desplegarla.' };
+  }
+  // Check whose turn it is before endedTurn: state.turn only increments once
+  // play returns to p1 (see battle.js endTurn), so right after the player
+  // taps ⏭️ it's still turn 1 with active==='p2' — must show the AI-is-
+  // playing message then, not loop back to "end your turn".
+  if (state.active === 'p2') {
+    return { text: '🤖 La IA está jugando su turno — mirá cómo responde.' };
+  }
+  if (!tutorialProgress.endedTurn) {
+    return { text: '👉 Perfecto. Ahora terminá tu turno tocando el botón ⏭️.' };
+  }
+  if (!tutorialProgress.attacked) {
+    return { text: '👉 Es tu turno otra vez. Tocá tu criatura lista y elegí un objetivo para atacar.' };
+  }
+  return { text: '✅ ¡Ya sabés lo básico! Seguí jugando para ganar la partida.', final: true };
+}
+
+function renderBattle() {
+  if (battle.winner) {
+    endMatch(battle.winner);
+    return;
+  }
+  const state = battle;
+  const isPlayerTurn = state.active === 'p1';
+  const highlights = computeHighlights(state);
+  const hasUnusedActions = isPlayerTurn && (!state.p1.heroActionUsed || countReadyCreatures(state.p1) > 0);
+  const coachStep = tutorialCoachStepInfo(state);
+
+  app.innerHTML = `
+    <div class="battle">
+      ${battleMenuHtml()}
+      ${heroPanelHtml(state, 'p2', highlights)}
+      <div class="battlefield-row">
+        ${pilesHtml(state)}
+        ${battlefieldHtml(state, highlights)}
+        <button class="btn end-turn ${hasUnusedActions ? 'has-warning' : ''}" id="end-turn" data-tooltip="Fin de turno" ${isPlayerTurn && !pendingPlacement && !pendingTarget ? '' : 'disabled'}>
+          ⏭️${hasUnusedActions ? '<span class="end-turn-warning-dot"></span>' : ''}
+        </button>
+      </div>
+      <div class="turn-indicator ${coachStep ? 'coach-active' : ''}">
+        ${
+          coachStep
+            ? `<div class="tutorial-coach-banner">
+                <span>${coachStep.text}</span>
+                ${coachStep.final ? '<button class="btn small primary" id="tutorial-coach-done">Entendido</button>' : ''}
+              </div>`
+            : `${turnLabel(state)} · Turno ${state.turn}`
+        }
+      </div>
+      ${heroPanelHtml(state, 'p1', highlights)}
+      <div class="hand">${handHtml(state)}</div>
+      ${pileModalHtml(state)}
+    </div>`;
+
+  updateOccupancy(state);
+
+  const endBtn = document.getElementById('end-turn');
+  if (endBtn) endBtn.onclick = onEndTurn;
+  const coachDoneBtn = document.getElementById('tutorial-coach-done');
+  if (coachDoneBtn) {
+    coachDoneBtn.onclick = () => {
+      tutorialCoachActive = false;
+      save.guidedTutorialDone = true;
+      persist();
+      renderBattle();
+    };
+  }
+
+  const menuBtn = document.getElementById('battle-menu-btn');
+  if (menuBtn) menuBtn.onclick = () => { battleMenuOpen = !battleMenuOpen; render(); };
+  const closeMenuBtn = document.getElementById('close-menu-btn');
+  if (closeMenuBtn) closeMenuBtn.onclick = () => { battleMenuOpen = false; render(); };
+  const battleSoundBtn = document.getElementById('battle-sound-toggle');
+  if (battleSoundBtn) battleSoundBtn.onclick = () => { toggleSound(); render(); };
+  const battleHapticsBtn = document.getElementById('battle-haptics-toggle');
+  if (battleHapticsBtn) battleHapticsBtn.onclick = () => { toggleHaptics(); render(); };
+  const forfeitBtn = document.getElementById('forfeit-btn');
+  if (forfeitBtn) forfeitBtn.onclick = () => { battleMenuOpen = false; forfeitConfirmOpen = true; render(); };
+  const forfeitCancelBtn = document.getElementById('forfeit-cancel');
+  if (forfeitCancelBtn) forfeitCancelBtn.onclick = () => { forfeitConfirmOpen = false; render(); };
+  const forfeitConfirmBtn = document.getElementById('forfeit-confirm');
+  if (forfeitConfirmBtn) forfeitConfirmBtn.onclick = onForfeit;
+  const endTurnCancelBtn = document.getElementById('end-turn-cancel');
+  if (endTurnCancelBtn) endTurnCancelBtn.onclick = () => { endTurnConfirmOpen = false; render(); };
+  const endTurnConfirmBtn = document.getElementById('end-turn-confirm');
+  if (endTurnConfirmBtn) endTurnConfirmBtn.onclick = doEndTurn;
+
+  app.querySelectorAll('.pile').forEach((el) => {
+    el.onclick = () => { openPile = { side: el.dataset.side, kind: el.dataset.kind }; render(); };
+  });
+  const pileModalClose = document.getElementById('pile-modal-close');
+  if (pileModalClose) pileModalClose.onclick = () => { openPile = null; render(); };
+  const pileModalOverlay = document.getElementById('pile-modal-overlay');
+  if (pileModalOverlay) {
+    pileModalOverlay.onclick = (e) => {
+      if (e.target === pileModalOverlay) { openPile = null; render(); }
+    };
+  }
+
+  app.querySelectorAll('.hand-card').forEach((el) => {
+    const idx = Number(el.dataset.idx);
+    el.onclick = () => onHandCardClick(idx);
+    wireHandCardDrag(el, idx);
+  });
+  app.querySelectorAll('.lane-slot').forEach((el) => {
+    el.onclick = () => onSlotClick(el.dataset.side, Number(el.dataset.lane), el.dataset.row, el);
+    if (el.dataset.side === 'p1' && el.classList.contains('occupied')) {
+      wireBoardCreatureDrag(el, Number(el.dataset.lane), el.dataset.row);
+    }
+  });
+  app.querySelectorAll('.hero-face').forEach((el) => {
+    el.onclick = () => onFaceClick(el.dataset.side, el);
+  });
+  app.querySelectorAll('.attr-pip[data-attr]').forEach((el) => {
+    el.onclick = () => onLevelUp(el.dataset.attr);
+  });
+  const specialBtn = document.getElementById('hero-special');
+  if (specialBtn) specialBtn.onclick = onUseSpecial;
+}
+
+function isPositiveEffect(effect) {
+  return effect.startsWith('buff_') || effect.startsWith('heal_');
+}
+
+function spellFloatingText(card) {
+  if (card.effect === 'destroy_creature') return '💀';
+  if (isPositiveEffect(card.effect)) return `+${card.value}`;
+  return `-${card.value}`;
+}
+
+function showToast(message) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = message;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('visible'));
+  setTimeout(() => {
+    el.classList.remove('visible');
+    setTimeout(() => el.remove(), 250);
+  }, 2200);
+}
+
+function spawnFloatingNumber(anchorEl, text, isHeal) {
+  if (!anchorEl) return;
+  const rect = anchorEl.getBoundingClientRect();
+  const el = document.createElement('div');
+  el.className = 'floating-number ' + (isHeal ? 'heal' : 'damage');
+  el.textContent = text;
+  el.style.left = rect.left + rect.width / 2 + 'px';
+  el.style.top = rect.top + 'px';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 900);
+}
+
+function effectIsHeal(effectId) {
+  return effectId.startsWith('heal_');
+}
+
+function effectDisplay(effectId) {
+  const match = effectId.match(/_(\d+)$/);
+  const amount = match ? match[1] : '';
+  return `${effectIsHeal(effectId) ? '+' : '-'}${amount}`;
+}
+
+function isLegalPlacementSlot(card, laneIndex, row) {
+  const legalRows = card.placement === 'melee' ? ['front'] : card.placement === 'shooter' ? ['back'] : ['front', 'back'];
+  return legalRows.includes(row) && !battle.p1.battlefield[laneIndex][row];
+}
+
+function isLegalSpellTarget(card, side) {
+  if (card.target === 'ally_creature') return side === 'p1';
+  if (card.target === 'enemy_creature') return side === 'p2';
+  if (card.target === 'enemy_any') return side === 'p2';
+  return false;
+}
+
+function onHandCardClick(idx) {
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
+  if (battle.active !== 'p1' || battle.winner) return;
+  if (pendingPlacement && pendingPlacement.idx === idx) {
+    pendingPlacement = null;
+    render();
+    return;
+  }
+  if (pendingTarget && pendingTarget.idx === idx) {
+    pendingTarget = null;
+    render();
+    return;
+  }
+  if (pendingPlacement || pendingTarget) return;
+
+  const cardId = battle.p1.hand[idx];
+  const card = getCard(cardId);
+  const attrValue = card.type === 'creature' ? battle.p1.might : card.type === 'spell' ? battle.p1.magic : battle.p1.destiny;
+  if (card.cost > battle.p1.resource || attrValue < card.requirement) return;
+
+  if (card.type === 'creature') {
+    pendingPlacement = { idx, card };
+    selectedAttacker = null;
+    render();
+    return;
+  }
+
+  if (card.target === 'none') {
+    if (isOnline()) Net.sendAction({ kind: 'spell', handIdx: idx, target: undefined });
+    else playSpellOrFortune(battle, 'p1', idx, undefined);
+    sfx.cast();
+    vibrate(10);
+    render();
+  } else if (card.target === 'enemy_hero') {
+    const heroEl = document.querySelector('.hero-panel.enemy .hero-face');
+    spawnFloatingNumber(heroEl, `-${card.value}`, false);
+    if (isOnline()) Net.sendAction({ kind: 'spell', handIdx: idx, target: undefined });
+    else playSpellOrFortune(battle, 'p1', idx, undefined);
+    sfx.cast();
+    vibrate(10);
+    render();
+  } else {
+    pendingTarget = { idx, card };
+    selectedAttacker = null;
+    render();
+  }
+}
+
+const DRAG_THRESHOLD = 10;
+
+function wireHandCardDrag(el, idx) {
+  el.addEventListener('pointerdown', (e) => {
+    if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+    const cardId = battle.p1.hand[idx];
+    const card = getCard(cardId);
+    if (card.type !== 'creature') return;
+    if (card.cost > battle.p1.resource || battle.p1.might < card.requirement) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+    let ghost = null;
+    let hoverSlot = null;
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragging) {
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+        dragging = true;
+        pendingPlacement = { idx, card };
+        render();
+        ghost = document.createElement('div');
+        ghost.className = 'drag-ghost';
+        ghost.innerHTML = cardArtSVG(card);
+        document.body.appendChild(ghost);
+      }
+      ghost.style.left = `${ev.clientX}px`;
+      ghost.style.top = `${ev.clientY}px`;
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const slot = under && under.closest('.lane-slot.legal-target');
+      if (hoverSlot && hoverSlot !== slot) hoverSlot.classList.remove('drag-hover');
+      if (slot) slot.classList.add('drag-hover');
+      hoverSlot = slot;
+    };
+
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      if (!dragging) return;
+      if (ghost) ghost.remove();
+      if (hoverSlot) {
+        hoverSlot.classList.remove('drag-hover');
+        const lane = Number(hoverSlot.dataset.lane);
+        const row = hoverSlot.dataset.row;
+        pendingPlacement = null;
+        if (isOnline()) Net.sendAction({ kind: 'deploy', handIdx: idx, laneIndex: lane, row });
+        else playCreature(battle, 'p1', idx, lane, row);
+        sfx.deploy();
+        vibrate(10);
+      } else {
+        pendingPlacement = null;
+      }
+      suppressClick = true;
+      render();
+    };
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
+}
+
+// Dragging a ready creature onto an enemy target attacks it (creature or
+// face); dragging it onto an empty own-side slot repositions it instead —
+// one gesture covers both actions, replacing the old tap-then-tap flow.
+function wireBoardCreatureDrag(el, laneIndex, row) {
+  el.addEventListener('pointerdown', (e) => {
+    if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+    const creature = battle.p1.battlefield[laneIndex][row];
+    if (!creature || !creature.canAttack) return;
+    const card = getCard(creature.cardId);
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+    let ghost = null;
+    let hoverTarget = null;
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragging) {
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+        dragging = true;
+        selectedAttacker = { laneIndex, row };
+        render();
+        ghost = document.createElement('div');
+        ghost.className = 'drag-ghost';
+        ghost.innerHTML = cardArtSVG(card);
+        document.body.appendChild(ghost);
+      }
+      ghost.style.left = `${ev.clientX}px`;
+      ghost.style.top = `${ev.clientY}px`;
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const slot = under && under.closest('.lane-slot.legal-target, .lane-slot.legal-move-target');
+      const face = !slot && under && under.closest('.hero-face.legal-target');
+      const target = slot || face;
+      if (hoverTarget && hoverTarget !== target) hoverTarget.classList.remove('drag-hover');
+      if (target) target.classList.add('drag-hover');
+      hoverTarget = target;
+    };
+
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      selectedAttacker = null;
+      if (!dragging) return;
+      if (ghost) ghost.remove();
+      if (hoverTarget) {
+        hoverTarget.classList.remove('drag-hover');
+        if (hoverTarget.classList.contains('hero-face')) {
+          resolveAttack({ laneIndex, row }, { type: 'face' });
+        } else if (hoverTarget.classList.contains('legal-target')) {
+          resolveAttack({ laneIndex, row }, { type: 'creature', row: hoverTarget.dataset.row });
+        } else if (hoverTarget.classList.contains('legal-move-target')) {
+          const toLane = Number(hoverTarget.dataset.lane);
+          const toRow = hoverTarget.dataset.row;
+          if (isOnline()) Net.sendAction({ kind: 'move', fromLane: laneIndex, fromRow: row, toLane, toRow });
+          else moveCreature(battle, 'p1', laneIndex, row, toLane, toRow);
+          sfx.click();
+          vibrate(10);
+        }
+      }
+      suppressClick = true;
+      render();
+    };
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
+}
+
+function resolveAttack(attackerPos, target) {
+  const attacker = battle.p1.battlefield[attackerPos.laneIndex][attackerPos.row];
+  const attackerEl = document.querySelector(
+    `.lane-slot[data-side="p1"][data-lane="${attackerPos.laneIndex}"][data-row="${attackerPos.row}"] .board-card`
+  );
+  if (attackerEl) attackerEl.classList.add('lunge');
+  sfx.attack();
+  vibrate(15);
+
+  let defender = null;
+  let targetEl = null;
+  if (target.type === 'face') {
+    targetEl = document.querySelector('.hero-panel.enemy .hero-face');
+  } else {
+    defender = battle.p2.battlefield[attackerPos.laneIndex][target.row];
+    targetEl = document.querySelector(
+      `.lane-slot[data-side="p2"][data-lane="${attackerPos.laneIndex}"][data-row="${target.row}"] .board-card`
+    );
+  }
+  if (targetEl) {
+    targetEl.classList.add('hit-flash');
+    spawnFloatingNumber(targetEl, `-${attacker.atk}`, false);
+  }
+
+  const attackerCard = getCard(attacker.cardId);
+  const willRetaliate = defender && defender.life > attacker.atk && attackerCard.placement !== 'shooter';
+  selectedAttacker = null;
+
+  setTimeout(() => {
+    if (isOnline()) {
+      // Server is authoritative — send the intent and let the incoming
+      // 'step' broadcast apply the real result (see Net.on('step', ...)).
+      Net.sendAction({ kind: 'attack', laneIndex: attackerPos.laneIndex, row: attackerPos.row, target });
+      return;
+    }
+    const res = attack(battle, 'p1', attackerPos.laneIndex, attackerPos.row, target);
+    if (tutorialProgress) tutorialProgress.attacked = true;
+    if (willRetaliate && attackerEl) {
+      spawnFloatingNumber(attackerEl, `-${defender.retaliate}`, false);
+    }
+    if (res.attackerAbility) {
+      const heroEl = document.querySelector('.hero-panel.player .hero-face');
+      if (heroEl) {
+        heroEl.classList.add('hit-flash');
+        spawnFloatingNumber(heroEl, effectDisplay(res.attackerAbility), effectIsHeal(res.attackerAbility));
+        effectIsHeal(res.attackerAbility) ? sfx.heal() : sfx.damage();
+      }
+    }
+    if (res.defenderAbility) {
+      const enemyHeroEl = document.querySelector('.hero-panel.enemy .hero-face');
+      if (enemyHeroEl) {
+        enemyHeroEl.classList.add('hit-flash');
+        spawnFloatingNumber(enemyHeroEl, effectDisplay(res.defenderAbility), effectIsHeal(res.defenderAbility));
+        effectIsHeal(res.defenderAbility) ? sfx.heal() : sfx.damage();
+      }
+    }
+    render();
+  }, 260);
+}
+
+function onSlotClick(side, laneIndex, row, el) {
+  if (battle.active !== 'p1' || battle.winner) return;
+
+  if (pendingPlacement) {
+    if (side !== 'p1' || !isLegalPlacementSlot(pendingPlacement.card, laneIndex, row)) return;
+    const idx = pendingPlacement.idx;
+    pendingPlacement = null;
+    if (isOnline()) Net.sendAction({ kind: 'deploy', handIdx: idx, laneIndex, row });
+    else playCreature(battle, 'p1', idx, laneIndex, row);
+    sfx.deploy();
+    vibrate(10);
+    render();
+    return;
+  }
+
+  if (pendingTarget) {
+    const creature = battle[side].battlefield[laneIndex][row];
+    if (!creature || !isLegalSpellTarget(pendingTarget.card, side)) return;
+    const card = pendingTarget.card;
+    const idx = pendingTarget.idx;
+    const targetEl = el.querySelector('.board-card') || el;
+    targetEl.classList.add('hit-flash');
+    spawnFloatingNumber(targetEl, spellFloatingText(card), isPositiveEffect(card.effect));
+    sfx.cast();
+    vibrate(10);
+    const target = { side, laneIndex, row };
+    pendingTarget = null;
+    setTimeout(() => {
+      if (isOnline()) Net.sendAction({ kind: 'spell', handIdx: idx, target });
+      else playSpellOrFortune(battle, 'p1', idx, target);
+      render();
+    }, 260);
+    return;
+  }
+
+  if (side === 'p1') {
+    const creature = battle.p1.battlefield[laneIndex][row];
+
+    if (!creature) {
+      // tapping an empty own-side slot: resolve as a move if one is pending
+      if (!selectedAttacker) return;
+      const mover = battle.p1.battlefield[selectedAttacker.laneIndex][selectedAttacker.row];
+      if (!mover) return;
+      const moverCard = getCard(mover.cardId);
+      const moveOptions = getValidMoveTargets(battle, 'p1', selectedAttacker.laneIndex, selectedAttacker.row, moverCard.placement);
+      const isValidMove = moveOptions.some((m) => m.laneIndex === laneIndex && m.row === row);
+      if (!isValidMove) return;
+      const from = selectedAttacker;
+      selectedAttacker = null;
+      if (isOnline()) Net.sendAction({ kind: 'move', fromLane: from.laneIndex, fromRow: from.row, toLane: laneIndex, toRow: row });
+      else moveCreature(battle, 'p1', from.laneIndex, from.row, laneIndex, row);
+      render();
+      return;
+    }
+
+    if (!creature.canAttack) return;
+    if (selectedAttacker && selectedAttacker.laneIndex === laneIndex && selectedAttacker.row === row) {
+      selectedAttacker = null;
+      render();
+      return;
+    }
+    const card = getCard(creature.cardId);
+    const options = getValidAttackTargets(battle, 'p1', laneIndex, card.placement);
+    const moveOptions = getValidMoveTargets(battle, 'p1', laneIndex, row, card.placement);
+    if (options.length === 1 && options[0].type === 'face' && moveOptions.length === 0) {
+      resolveAttack({ laneIndex, row }, { type: 'face' });
+      return;
+    }
+    selectedAttacker = { laneIndex, row };
+    render();
+    return;
+  }
+
+  // side === 'p2': attempting to attack this slot
+  if (!selectedAttacker || laneIndex !== selectedAttacker.laneIndex) return;
+  const attackerCreature = battle.p1.battlefield[selectedAttacker.laneIndex][selectedAttacker.row];
+  if (!attackerCreature) return;
+  const card = getCard(attackerCreature.cardId);
+  const options = getValidAttackTargets(battle, 'p1', selectedAttacker.laneIndex, card.placement);
+  const match = options.find((o) => o.type === 'creature' && o.row === row);
+  if (!match) return;
+  resolveAttack(selectedAttacker, { type: 'creature', row });
+}
+
+function onFaceClick(side, el) {
+  if (battle.active !== 'p1' || battle.winner) return;
+
+  if (pendingTarget) {
+    if (side !== 'p2' || pendingTarget.card.target !== 'enemy_any') return;
+    const card = pendingTarget.card;
+    spawnFloatingNumber(el, `-${card.value}`, false);
+    const idx = pendingTarget.idx;
+    pendingTarget = null;
+    setTimeout(() => {
+      if (isOnline()) Net.sendAction({ kind: 'spell', handIdx: idx, target: undefined });
+      else playSpellOrFortune(battle, 'p1', idx, undefined);
+      render();
+    }, 260);
+    return;
+  }
+
+  if (selectedAttacker && side === 'p2') {
+    const attackerCreature = battle.p1.battlefield[selectedAttacker.laneIndex][selectedAttacker.row];
+    if (!attackerCreature) return;
+    const card = getCard(attackerCreature.cardId);
+    const options = getValidAttackTargets(battle, 'p1', selectedAttacker.laneIndex, card.placement);
+    if (options.some((o) => o.type === 'face')) {
+      resolveAttack(selectedAttacker, { type: 'face' });
+    }
+  }
+}
+
+function onLevelUp(attr) {
+  if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+  if (isOnline()) Net.sendAction({ kind: 'levelUp', attr });
+  else levelUpAttribute(battle, 'p1', attr);
+  render();
+}
+
+function onUseSpecial() {
+  if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+  const hero = getHero(battle.p1.heroId);
+  if (hero.special.id === 'heal_hero_2') {
+    spawnFloatingNumber(document.querySelector('.hero-panel.player .hero-face'), '+2', true);
+  } else if (hero.special.id === 'damage_enemy_hero_1') {
+    spawnFloatingNumber(document.querySelector('.hero-panel.enemy .hero-face'), '-1', false);
+  }
+  if (isOnline()) Net.sendAction({ kind: 'special' });
+  else useHeroSpecial(battle, 'p1', hero.special.id);
+  render();
+}
+
+function onEndTurn() {
+  if (battle.active !== 'p1' || pendingPlacement || pendingTarget) return;
+
+  const heroActionPending = !battle.p1.heroActionUsed;
+  const readyCreatures = countReadyCreatures(battle.p1);
+  if (heroActionPending || readyCreatures > 0) {
+    endTurnConfirmOpen = true;
+    render();
+    return;
+  }
+
+  doEndTurn();
+}
+
+function doEndTurn() {
+  endTurnConfirmOpen = false;
+  selectedAttacker = null;
+  sfx.click();
+  if (isOnline()) {
+    Net.sendAction({ kind: 'endTurn' });
+    render();
+    return;
+  }
+  endTurn(battle);
+  render();
+  if (battle.active === 'p2' && !battle.winner) {
+    setTimeout(playAiTurn, 500);
+  }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function showAiToast(message) {
+  if (!aiToastEl) {
+    aiToastEl = document.createElement('div');
+    aiToastEl.className = 'toast ai-toast';
+    document.body.appendChild(aiToastEl);
+  }
+  aiToastEl.textContent = message;
+  aiToastEl.classList.remove('visible');
+  // force reflow so re-adding 'visible' restarts the fade-in even if it's already showing
+  void aiToastEl.offsetWidth;
+  aiToastEl.classList.add('visible');
+  clearTimeout(aiToastHideTimer);
+  aiToastHideTimer = setTimeout(() => {
+    if (aiToastEl) aiToastEl.classList.remove('visible');
+  }, AI_STEP_DELAY + 300);
+}
+
+function hideAiToast() {
+  clearTimeout(aiToastHideTimer);
+  if (aiToastEl) {
+    aiToastEl.remove();
+    aiToastEl = null;
+  }
+}
+
+// Applies the visual/audio feedback for one already-mutated opponent step —
+// the bot's own turn (from ai.js's generator) and a real online opponent's
+// moves (relayed by the server) both funnel through here, since both
+// produce identically-shaped step descriptors (see src/actions.js). Called
+// right before render(), while the DOM still reflects the pre-step state.
+function animateOpponentStep(step) {
+  if (step.type === 'levelUp') {
+    showAiToast(`El rival sube ${attrFullLabel(step.attr)}`);
+  } else if (step.type === 'special') {
+    const heroEl = document.querySelector('.hero-panel.enemy .hero-face');
+    if (heroEl) heroEl.classList.add('hit-flash');
+    showAiToast('El rival usa su habilidad especial');
+  } else if (step.type === 'deploy') {
+    sfx.deploy();
+    vibrate(10);
+    showAiToast(`El rival juega ${step.card.name}`);
+  } else if (step.type === 'move') {
+    sfx.click();
+    showAiToast(`El rival reposiciona ${step.card.name}`);
+  } else if (step.type === 'spell') {
+    const targetEl = step.target
+      ? document.querySelector(
+          `.lane-slot[data-side="${step.target.side}"][data-lane="${step.target.laneIndex}"][data-row="${step.target.row}"] .board-card`
+        )
+      : document.querySelector('.hero-panel.player .hero-face');
+    if (targetEl) {
+      targetEl.classList.add('hit-flash');
+      spawnFloatingNumber(targetEl, spellFloatingText(step.card), isPositiveEffect(step.card.effect));
+    }
+    sfx.cast();
+    vibrate(10);
+    showAiToast(`El rival lanza ${step.card.name}`);
+  } else if (step.type === 'attack') {
+    const attackerEl = document.querySelector(
+      `.lane-slot[data-side="p2"][data-lane="${step.laneIndex}"][data-row="${step.row}"] .board-card`
+    );
+    if (attackerEl) attackerEl.classList.add('lunge');
+    sfx.attack();
+    vibrate(15);
+
+    const isFace = step.target.type === 'face';
+    const targetEl = isFace
+      ? document.querySelector('.hero-panel.player .hero-face')
+      : document.querySelector(
+          `.lane-slot[data-side="p1"][data-lane="${step.laneIndex}"][data-row="${step.target.row}"] .board-card`
+        );
+    if (targetEl) {
+      targetEl.classList.add('hit-flash');
+      spawnFloatingNumber(targetEl, `-${step.attackerAtk}`, false);
+    }
+    if (step.retaliateDamage > 0 && attackerEl) {
+      spawnFloatingNumber(attackerEl, `-${step.retaliateDamage}`, false);
+    }
+    if (isFace) {
+      sfx.damage();
+      vibrate([10, 30, 15]);
+    }
+    if (step.res.attackerAbility) {
+      const enemyHeroEl = document.querySelector('.hero-panel.enemy .hero-face');
+      if (enemyHeroEl) {
+        enemyHeroEl.classList.add('hit-flash');
+        spawnFloatingNumber(enemyHeroEl, effectDisplay(step.res.attackerAbility), effectIsHeal(step.res.attackerAbility));
+      }
+    }
+    if (step.res.defenderAbility) {
+      const heroEl = document.querySelector('.hero-panel.player .hero-face');
+      if (heroEl) {
+        heroEl.classList.add('hit-flash');
+        spawnFloatingNumber(heroEl, effectDisplay(step.res.defenderAbility), effectIsHeal(step.res.defenderAbility));
+      }
+    }
+    showAiToast(`El rival ataca con ${step.card.name}`);
+  }
+}
+
+async function playAiTurn() {
+  for (const step of runAiTurnSteps(battle)) {
+    animateOpponentStep(step);
+    render();
+    await wait(AI_STEP_DELAY);
+    if (battle.winner) break;
+  }
+  hideAiToast();
+  if (!battle.winner) endTurn(battle);
+  render();
+}
+
+function onForfeit() {
+  forfeitConfirmOpen = false;
+  endTurnConfirmOpen = false;
+  if (isOnline()) {
+    Net.sendAction({ kind: 'forfeit' });
+    return;
+  }
+  battle.winner = 'p2';
+  render();
+}
+
+// ---------------- Router ----------------
+
+export function render() {
+  if (screen === 'home') renderHome();
+  else if (screen === 'factionPick') renderFactionPick();
+  else if (screen === 'heroSelect') renderHeroSelect();
+  else if (screen === 'deckSelect') renderDeckSelect();
+  else if (screen === 'deckbuilder') renderDeckbuilder();
+  else if (screen === 'collection') renderCollection();
+  else if (screen === 'missions') renderMissions();
+  else if (screen === 'seasonPass') renderSeasonPass();
+  else if (screen === 'ladder') renderLadder();
+  else if (screen === 'profile') renderProfile();
+  else if (screen === 'tutorial') renderTutorial();
+  else if (screen === 'shop') renderShop();
+  else if (screen === 'packOpen') renderPackOpen();
+  else if (screen === 'reveal') renderReveal();
+  else if (screen === 'onlineLobby') renderOnlineLobby();
+  else if (screen === 'onlineWaiting') renderOnlineWaiting();
+  else if (screen === 'battle') renderBattle();
+  renderFloatingClaimIcons();
+  wireTooltips();
+  wireHeader();
+  renderAttackArrows();
+  if (screen !== 'battle') wireCardTilt();
+}
+
+// Global reminders (any screen except battle, to stay out of combat's way)
+// that something is waiting to be claimed — tap either to jump straight to
+// the section that has it.
+function renderFloatingClaimIcons() {
+  let layer = document.getElementById('floating-claims');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.id = 'floating-claims';
+    document.body.appendChild(layer);
+  }
+  if (screen === 'battle') {
+    layer.innerHTML = '';
+    return;
+  }
+  const missionsClaimable = Missions.countClaimable(save);
+  const spClaimable = SeasonPass.countClaimable(save);
+  layer.innerHTML = `
+    ${
+      missionsClaimable
+        ? `<button class="floating-claim left" id="floating-claim-missions" data-tooltip="Tenés misiones para reclamar">🎯<span class="floating-claim-badge">${missionsClaimable}</span></button>`
+        : ''
+    }
+    ${
+      spClaimable
+        ? `<button class="floating-claim right" id="floating-claim-season" data-tooltip="Tenés recompensas del pase para reclamar">🎫<span class="floating-claim-badge">${spClaimable}</span></button>`
+        : ''
+    }
+  `;
+  const missionsBtn = document.getElementById('floating-claim-missions');
+  if (missionsBtn) missionsBtn.onclick = () => go('missions');
+  const spBtn = document.getElementById('floating-claim-season');
+  if (spBtn) spBtn.onclick = () => go('seasonPass');
+}
+
+function renderAttackArrows() {
+  const existing = document.getElementById('attack-arrows');
+  if (existing) existing.remove();
+  if (screen !== 'battle' || !battle || !selectedAttacker) return;
+
+  const mover = battle.p1.battlefield[selectedAttacker.laneIndex][selectedAttacker.row];
+  if (!mover) return;
+  const card = getCard(mover.cardId);
+  const options = getValidAttackTargets(battle, 'p1', selectedAttacker.laneIndex, card.placement);
+  const creatureTargets = options.filter((o) => o.type === 'creature');
+  if (creatureTargets.length === 0) return;
+
+  const attackerEl = document.querySelector(
+    `.lane-slot[data-side="p1"][data-lane="${selectedAttacker.laneIndex}"][data-row="${selectedAttacker.row}"]`
+  );
+  if (!attackerEl) return;
+  const aRect = attackerEl.getBoundingClientRect();
+  const ax = aRect.left + aRect.width / 2;
+  const ay = aRect.top + aRect.height / 2;
+
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('id', 'attack-arrows');
+  svg.setAttribute('class', 'attack-arrows-overlay');
+
+  const defs = document.createElementNS(svgNS, 'defs');
+  defs.innerHTML =
+    '<marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ff5b5b"/></marker>';
+  svg.appendChild(defs);
+
+  for (const t of creatureTargets) {
+    const targetEl = document.querySelector(`.lane-slot[data-side="p2"][data-lane="${selectedAttacker.laneIndex}"][data-row="${t.row}"]`);
+    if (!targetEl) continue;
+    const tRect = targetEl.getBoundingClientRect();
+    const tx = tRect.left + tRect.width / 2;
+    const ty = tRect.top + tRect.height / 2;
+    const line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('x1', ax);
+    line.setAttribute('y1', ay);
+    line.setAttribute('x2', tx);
+    line.setAttribute('y2', ty);
+    line.setAttribute('class', 'attack-arrow-line');
+    line.setAttribute('marker-end', 'url(#arrowhead)');
+    svg.appendChild(line);
+  }
+
+  document.body.appendChild(svg);
+}
+
+let tooltipLayer = null;
+
+function ensureTooltipLayer() {
+  if (!tooltipLayer) {
+    tooltipLayer = document.createElement('div');
+    tooltipLayer.id = 'tooltip-layer';
+    document.body.appendChild(tooltipLayer);
+  }
+  return tooltipLayer;
+}
+
+function showTooltip(anchorEl, text) {
+  const layer = ensureTooltipLayer();
+  layer.textContent = text;
+  layer.classList.add('visible');
+  const rect = anchorEl.getBoundingClientRect();
+  const layerRect = layer.getBoundingClientRect();
+  let top = rect.top - layerRect.height - 8;
+  if (top < 4) top = Math.min(window.innerHeight - layerRect.height - 4, rect.bottom + 8);
+  let left = rect.left + rect.width / 2 - layerRect.width / 2;
+  left = Math.max(4, Math.min(left, window.innerWidth - layerRect.width - 4));
+  layer.style.top = `${top}px`;
+  layer.style.left = `${left}px`;
+}
+
+function hideTooltip() {
+  if (tooltipLayer) tooltipLayer.classList.remove('visible');
+}
+
+// Tilt-on-hover "holo" effect for static card grids (collection/shop/
+// deckbuilder/etc). Deliberately not called for the battle screen — hand
+// cards there are already owned by wireHandCardDrag's pointerdown/pointermove
+// drag, and this only activates for real mice anyway (touch never sees it).
+function wireCardTilt() {
+  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+  document.querySelectorAll('.card').forEach((el) => {
+    el.classList.add('tilt-armed');
+    el.addEventListener('pointermove', (e) => {
+      const rect = el.getBoundingClientRect();
+      const px = (e.clientX - rect.left) / rect.width - 0.5;
+      const py = (e.clientY - rect.top) / rect.height - 0.5;
+      el.style.setProperty('--tilt-y', `${(px * 14).toFixed(2)}deg`);
+      el.style.setProperty('--tilt-x', `${(-py * 14).toFixed(2)}deg`);
+      el.style.setProperty('--glow-x', `${((px + 0.5) * 100).toFixed(1)}%`);
+      el.style.setProperty('--glow-y', `${((py + 0.5) * 100).toFixed(1)}%`);
+    });
+    el.addEventListener('pointerleave', () => {
+      el.style.setProperty('--tilt-y', '0deg');
+      el.style.setProperty('--tilt-x', '0deg');
+    });
+  });
+}
+
+// `scope` lets rerenderHeader() rebind only the freshly-swapped topbar node
+// instead of the whole document (which would double-bind every other
+// tooltip still on screen). Reads el.dataset.tooltip live on each event
+// rather than capturing it once, so a button that changes its own tooltip
+// text without a full re-render (rare now, but cheap to keep correct) still
+// shows the current text.
+function wireTooltips(scope = document) {
+  scope.querySelectorAll('[data-tooltip]').forEach((el) => {
+    el.addEventListener('mouseenter', () => showTooltip(el, el.dataset.tooltip));
+    el.addEventListener('mouseleave', hideTooltip);
+    el.addEventListener(
+      'touchstart',
+      () => {
+        showTooltip(el, el.dataset.tooltip);
+        clearTimeout(el._tooltipTimer);
+        el._tooltipTimer = setTimeout(hideTooltip, 1800);
+      },
+      { passive: true }
+    );
+  });
+}
+
+export function init() {
+  setupNetListeners();
+  if (!save.selectedFaction) {
+    // Brand-new save: nothing owned yet, no faction chosen — onboarding
+    // handles both the starter deck grant and the guided first battle, so
+    // it supersedes the old static tutorial screen for these players.
+    screen = 'factionPick';
+  } else if (!save.tutorialSeen) {
+    screen = 'tutorial';
+  }
+  render();
+  // Populate the topbar name chip ASAP without forcing the player through an
+  // online match first — same offline-tolerant fire-and-forget pattern as
+  // renderLadder's fetchAccount call.
+  Net.fetchAccount()
+    .then((account) => {
+      syncAccountToSave(account);
+      if (screen === 'home' || screen === 'profile') render();
+    })
+    .catch(() => {});
+}

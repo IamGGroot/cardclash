@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cardclash",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["dev-server.py", "8790"],
+      "cwd": "/Users/gera/Code/cardclash",
+      "port": 8790
+    }
+  ]
+}
