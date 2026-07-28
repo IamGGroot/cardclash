@@ -5,6 +5,7 @@ import { HEROES } from '../src/cards.js';
 import { env } from './env.js';
 import { getOrCreateAccount, setUsername, linkGoogleAccount, publicAccount } from './accounts.js';
 import { verifyGoogleIdToken, googleSignInConfigured } from './googleAuth.js';
+import { resetAllAccounts } from './db.js';
 import { listSkus, getSku } from './skus.js';
 import { createCheckoutSession, verifyStripeSignature, handleCheckoutCompleted, webhookConfigured } from './payments.js';
 import {
@@ -105,6 +106,23 @@ const server = http.createServer(async (req, res) => {
       }
       const account = linkGoogleAccount(token, profile);
       sendJson(res, 200, { account: publicAccount(account) });
+      return;
+    }
+
+    // Destructive admin tool, not part of normal gameplay — wipes every
+    // account. Disabled unless ADMIN_SECRET is set, and even then only
+    // responds to a request carrying the exact matching secret (any
+    // mismatch, including "unset", looks like a 404 rather than a 403, so
+    // it doesn't advertise its own existence).
+    if (req.method === 'POST' && url.pathname === '/api/admin/reset-accounts') {
+      const adminSecret = env('ADMIN_SECRET');
+      const { secret } = await readJson(req);
+      if (!adminSecret || secret !== adminSecret) {
+        sendJson(res, 404, { error: 'not found' });
+        return;
+      }
+      resetAllAccounts();
+      sendJson(res, 200, { ok: true });
       return;
     }
 

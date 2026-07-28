@@ -749,10 +749,11 @@ function renderLadder(fetchFresh = true) {
   });
 
   if (fetchFresh) {
+    const seq = nextAccountSyncSeq();
     Net.fetchAccount()
       .then((account) => {
         if (!account || screen !== 'ladder') return;
-        syncAccountToSave(account);
+        syncAccountToSave(account, seq);
         renderLadder(false);
       })
       .catch(() => {});
@@ -789,9 +790,10 @@ function initGoogleSignInButton() {
 }
 
 function handleGoogleCredential(response) {
+  const seq = nextAccountSyncSeq();
   Net.linkGoogleAccount(response.credential)
     .then((account) => {
-      syncAccountToSave(account);
+      syncAccountToSave(account, seq);
       showToast('Cuenta vinculada con Google ✅');
       if (screen === 'profile') renderProfile(false);
     })
@@ -922,9 +924,10 @@ function renderProfile(fetchFresh = true) {
         return;
       }
       saveBtn.disabled = true;
+      const seq = nextAccountSyncSeq();
       try {
         const account = await Net.renameAccount(next);
-        syncAccountToSave(account);
+        syncAccountToSave(account, seq);
         profileEditingName = false;
         renderProfile(false);
       } catch {
@@ -945,10 +948,11 @@ function renderProfile(fetchFresh = true) {
   if (!save.googleLinked) initGoogleSignInButton();
 
   if (fetchFresh) {
+    const seq = nextAccountSyncSeq();
     Net.fetchAccount()
       .then((account) => {
         if (!account || screen !== 'profile' || profileEditingName) return;
-        syncAccountToSave(account);
+        syncAccountToSave(account, seq);
         renderProfile(false);
       })
       .catch(() => {});
@@ -993,7 +997,10 @@ function renderFactionPick() {
       save.selectedFaction = faction;
       save.username = username;
       persist();
-      Net.renameAccount(username).then(syncAccountToSave).catch(() => {});
+      const seq = nextAccountSyncSeq();
+      Net.renameAccount(username)
+        .then((account) => syncAccountToSave(account, seq))
+        .catch(() => {});
       startGuidedTutorialMatch(faction);
     };
   });
@@ -1766,12 +1773,29 @@ async function startOnlineMatch(faction) {
   render();
 }
 
+// Guards against out-of-order account responses: two account-touching calls
+// (e.g. the boot-time fetchAccount and a rename fired moments later) can
+// resolve in the opposite order they were sent in, and without this a
+// slower, older response arriving last would silently stomp a newer one —
+// this is exactly how a freshly-typed onboarding username was getting
+// reverted to the server's auto-generated one. Call nextAccountSyncSeq()
+// right before firing the request, then pass that value back into
+// syncAccountToSave() in the .then() — a response only applies if no newer
+// request has been issued since.
+let accountSyncSeq = 0;
+function nextAccountSyncSeq() {
+  return ++accountSyncSeq;
+}
+
 // Caches the parts of a server account we display without a live connection
 // (topbar name chip, profile stats) into `save`, mirroring the existing
 // save.trophies caching so they survive offline/first-paint before any
-// network round trip resolves.
-function syncAccountToSave(account) {
+// network round trip resolves. `seq` is optional — omit it for callers (like
+// the live WS 'identified' event) that should always win regardless of
+// ordering.
+function syncAccountToSave(account, seq) {
   if (!account) return;
+  if (seq !== undefined && seq !== accountSyncSeq) return;
   save.username = account.username;
   save.wins = account.wins || 0;
   save.losses = account.losses || 0;
@@ -3042,10 +3066,13 @@ export function init() {
   render();
   // Populate the topbar name chip ASAP without forcing the player through an
   // online match first — same offline-tolerant fire-and-forget pattern as
-  // renderLadder's fetchAccount call.
+  // renderLadder's fetchAccount call. Sequence-guarded (see
+  // nextAccountSyncSeq) so this can never stomp a rename the player makes
+  // (e.g. on the onboarding screen) while this request is still in flight.
+  const seq = nextAccountSyncSeq();
   Net.fetchAccount()
     .then((account) => {
-      syncAccountToSave(account);
+      syncAccountToSave(account, seq);
       if (screen === 'home' || screen === 'profile') render();
     })
     .catch(() => {});

@@ -53,3 +53,10 @@ export function findAccountByGoogleId(googleId) {
   const accounts = load().accounts;
   return Object.values(accounts).find((a) => a.googleId === googleId) ?? null;
 }
+
+// Destructive — wipes every account. Gated behind ADMIN_SECRET at the HTTP
+// layer (see server/index.js), never called from normal gameplay code.
+export function resetAllAccounts() {
+  cache = { accounts: {} };
+  persist();
+}
