@@ -7,10 +7,16 @@
 // pure/DOM-free.
 import { CARDS, cardsForFaction } from './cards.js';
 import { WEIGHTS_GEM, weightedPick } from './economy.js';
+import { POD_SIZE, seedBracket, drawRandomCommonCard } from './bracket.js';
+
+// Re-exported for existing callers (server/draftPods.js, tests) that import
+// these from here — the definitions now live in bracket.js since
+// tournament.js needs them too, but Draft.POD_SIZE/seedBracket/etc. still
+// work exactly as before.
+export { POD_SIZE, seedBracket, drawRandomCommonCard };
 
 export const PACK_SIZE = 5;
 export const PACKS_PER_PLAYER = 3;
-export const POD_SIZE = 4;
 export const TOTAL_PICKS = PACK_SIZE * PACKS_PER_PLAYER; // 15 — the 16th is the free bonus card, not a pick
 export const PICK_TIMER_MS = 20000;
 export const DRAFT_ENTRY_SKU = { id: 'draft_entry', label: 'Entrada a Draft', priceLabel: '$3.99' };
@@ -43,11 +49,6 @@ export function drawBonusNeutralCard() {
   return randomFrom(cardsForFaction('neutral'));
 }
 
-// 3rd/4th place consolation prize — a random common card from anywhere.
-export function drawRandomCommonCard() {
-  return randomFrom(CARDS.filter((c) => c.rarity === 'common'));
-}
-
 // Which seat receives the pack a given seat just picked from, for a pack
 // currently on round `round` (0-indexed: round 0 is everyone's first
 // pack). Alternates direction by round, same as a real Magic draft with an
@@ -56,12 +57,4 @@ export function drawRandomCommonCard() {
 export function nextPackAssignment(seatIndex, round, podSize = POD_SIZE) {
   const direction = round % 2 === 0 ? 1 : -1;
   return (seatIndex + direction + podSize) % podSize;
-}
-
-// [seat0, seat1, seat2, seat3] (queue-arrival order) -> semifinal pairs.
-// Seat 0 (first to queue) plays the last to queue, seat 1 plays seat 2 —
-// arbitrary but deterministic, there's no prior ranking to seed by.
-export function seedBracket(seatOrder) {
-  const [a, b, c, d] = seatOrder;
-  return { semis: [[a, d], [b, c]] };
 }

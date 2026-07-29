@@ -22,6 +22,7 @@ import * as DailyDeals from './dailyDeals.js';
 import * as SeasonPass from './seasonPass.js';
 import * as Ladder from './ladder.js';
 import * as Draft from './draft.js';
+import * as Tournament from './tournament.js';
 import { sfx, vibrate, setSoundEnabled, isSoundEnabled, setHapticsEnabled, isHapticsEnabled } from './sound.js';
 import * as Net from './net.js';
 
@@ -46,6 +47,7 @@ let draftQueueStatus = null; // { waiting, needed } while in the entry queue
 let draftPickDeadline = 0; // Date.now() timestamp the current pack's timer expires at, for the countdown bar
 let draftPicksSoFar = []; // full card objects picked so far this draft, oldest first — for the hero-pick faction hint
 let draftHeroChosen = false;
+let tournamentQueueStatus = null; // { waiting, needed } while in the Torneo entry queue
 
 let pendingPlacement = null; // { idx, card } while choosing a slot for a creature
 let pendingTarget = null; // { idx, card } while choosing a target for a spell/fortune
@@ -423,6 +425,10 @@ function renderHome() {
                <span class="play-menu-icon">🎴</span>
                <span>Draft — ${Draft.DRAFT_ENTRY_SKU.priceLabel}</span>
              </button>
+             <button class="play-menu-option tournament" id="play-tournament">
+               <span class="play-menu-icon">🏆</span>
+               <span>Torneo — ${Tournament.TOURNAMENT_ENTRY_SKU.priceLabel}</span>
+             </button>
            </div>`
         : ''
     }
@@ -516,6 +522,13 @@ function renderHome() {
     playDraftBtn.onclick = () => {
       playMenuOpen = false;
       go('draftEntry');
+    };
+  }
+  const playTournamentBtn = document.getElementById('play-tournament');
+  if (playTournamentBtn) {
+    playTournamentBtn.onclick = () => {
+      playMenuOpen = false;
+      go('tournamentEntry');
     };
   }
   document.getElementById('btn-pass-banner').onclick = () => go('seasonPass');
@@ -2008,7 +2021,9 @@ function renderDraftHeroPick() {
   });
 }
 
-function draftPrizeReveal(prize) {
+// Shared by Draft and Torneo — both award the same shape of prize
+// (packs and/or a consolation common card) via the same reveal screen.
+function bracketPrizeReveal(prize) {
   if (prize.commonCard) {
     Store.addCardsToCollection(save, [prize.commonCard]);
     persist();
@@ -2025,6 +2040,67 @@ function draftPrizeReveal(prize) {
     showToast('🏆 ¡Ganaste sobres de premio!');
     go('reveal');
   }
+}
+
+// ---------------- Torneo mode ----------------
+// 4 players pay to enter with their own already-built Normal deck (no
+// drafting) and play the same 2-semis-plus-a-final bracket as Draft, for
+// the same prizes — server/tournamentPods.js orchestrates it via the same
+// startDirectMatch rooms.js uses for every other online match, so
+// renderBattle is entirely unmodified here too.
+
+function renderTournamentEntry() {
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>🏆 Torneo</h2></div>
+      <p class="hint">
+        Jugás con tu mazo Normal ya armado (el mismo de "Mis Mazos") contra otros 3 jugadores — dos semifinales y una final.
+        El 1° puesto se lleva un Sobre Premium + un Sobre de Bronce, el 2° un Sobre de Bronce, y el 3° y 4° una carta común de regalo por participar.
+      </p>
+      <div class="welcome-offer">
+        <div class="welcome-offer-badge">Entrada</div>
+        <h3>${Tournament.TOURNAMENT_ENTRY_SKU.label}</h3>
+        <button class="btn primary" id="tournament-pay">Pagar ${Tournament.TOURNAMENT_ENTRY_SKU.priceLabel} y entrar</button>
+      </div>
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  document.getElementById('tournament-pay').onclick = () => startTournamentEntry();
+}
+
+async function startTournamentEntry() {
+  const faction = resolvePlayFaction(false);
+  if (!faction) {
+    showToast('Elegí un mazo completo en "Mis Mazos" antes de entrar a un torneo.');
+    go('deckSelect');
+    return;
+  }
+  tournamentQueueStatus = null;
+  screen = 'tournamentWaiting';
+  render();
+  try {
+    await Net.connect();
+  } catch {
+    showToast('No se pudo conectar con el servidor de Torneos.');
+    go('home');
+    return;
+  }
+  Net.queueTournament(faction, save.decks[faction]);
+}
+
+function renderTournamentWaiting() {
+  const status = tournamentQueueStatus;
+  const message = status ? `Esperando jugadores… (${status.waiting}/${status.needed})` : 'Conectando…';
+  app.innerHTML = `
+    ${header()}
+    <div class="screen center online-waiting">
+      <div class="spinner"></div><p>${message}</p>
+      <button class="btn" id="cancel-tournament">Cancelar</button>
+    </div>`;
+  document.getElementById('cancel-tournament').onclick = () => {
+    Net.cancelTournamentQueue();
+    go('home');
+  };
 }
 
 // ---------------- Match lifecycle ----------------
@@ -2344,7 +2420,13 @@ function setupNetListeners() {
     screen = 'reveal';
     render();
   });
-  Net.on('draftPrize', (msg) => draftPrizeReveal(msg.prize));
+  Net.on('draftPrize', (msg) => bracketPrizeReveal(msg.prize));
+
+  Net.on('tournamentQueued', (msg) => {
+    tournamentQueueStatus = { waiting: msg.waiting, needed: msg.needed };
+    if (screen === 'tournamentWaiting') render();
+  });
+  Net.on('tournamentPrize', (msg) => bracketPrizeReveal(msg.prize));
 }
 
 // ---------------- Battle screen ----------------
@@ -3513,6 +3595,8 @@ export function render() {
   else if (screen === 'draftWaiting') renderDraftWaiting();
   else if (screen === 'draftPick') renderDraftPick();
   else if (screen === 'draftHeroPick') renderDraftHeroPick();
+  else if (screen === 'tournamentEntry') renderTournamentEntry();
+  else if (screen === 'tournamentWaiting') renderTournamentWaiting();
   else if (screen === 'battle') renderBattle();
   wireTooltips();
   wireHeader();

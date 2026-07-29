@@ -38,6 +38,7 @@ import {
   handleDraftDisconnect,
   draftStats,
 } from './draftPods.js';
+import { queueTournamentEntry, cancelTournamentQueue, handleTournamentDisconnect, tournamentStats } from './tournamentPods.js';
 
 registerHeroes(HEROES);
 
@@ -95,7 +96,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
-      sendJson(res, 200, { ok: true, ...roomStats(), ...draftStats(), paymentsConfigured: webhookConfigured(), googleSignInConfigured: googleSignInConfigured() });
+      sendJson(res, 200, { ok: true, ...roomStats(), ...draftStats(), ...tournamentStats(), paymentsConfigured: webhookConfigured(), googleSignInConfigured: googleSignInConfigured() });
       return;
     }
 
@@ -297,6 +298,15 @@ wss.on('connection', (ws) => {
       case 'draftHeroPick':
         handleDraftHeroPick(ws, msg.faction);
         break;
+      case 'queueTournament': {
+        const account = getOrCreateAccount(msg.token);
+        const result = queueTournamentEntry({ ws, token: account.token, faction: msg.faction, deck: msg.deck });
+        if (result.error) ws.send(JSON.stringify({ type: 'error', message: result.error }));
+        break;
+      }
+      case 'cancelTournamentQueue':
+        cancelTournamentQueue(ws);
+        break;
       default:
         break;
     }
@@ -305,6 +315,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     handleDisconnect(ws);
     handleDraftDisconnect(ws);
+    handleTournamentDisconnect(ws);
   });
 });
 

@@ -551,6 +551,12 @@ html, body {
   background: linear-gradient(180deg, #a259ff, #6a2fbf);
 }
 
+.play-menu-option.tournament {
+  font-size: 13px;
+  color: #2b1a02;
+  background: linear-gradient(180deg, var(--gold-light), var(--gold-dark));
+}
+
 .play-menu-icon {
   font-size: 18px;
 }

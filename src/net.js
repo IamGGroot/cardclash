@@ -177,6 +177,15 @@ export function pickDraftHero(faction) {
   send({ type: 'draftHeroPick', faction });
 }
 
+// ---- Torneo mode ----
+
+export function queueTournament(faction, deck) {
+  send({ type: 'queueTournament', token: getToken(), faction, deck });
+}
+export function cancelTournamentQueue() {
+  send({ type: 'cancelTournamentQueue' });
+}
+
 // ---- REST helpers (payments + account lookups outside a live match) ----
 
 export async function fetchAccount() {
