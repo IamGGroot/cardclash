@@ -16,7 +16,7 @@ function send(ws, message) {
 const tournamentQueue = []; // [{ ws, token, faction, deck }]
 
 export function queueTournamentEntry({ ws, token, faction, deck }) {
-  if (!validateDeck(deck, faction)) return { error: 'Mazo inválido.' };
+  if (!validateDeck(deck)) return { error: 'Mazo inválido.' };
   if (tournamentQueue.some((e) => e.token === token)) return {};
   tournamentQueue.push({ ws, token, faction, deck });
   if (tournamentQueue.length >= POD_SIZE) {

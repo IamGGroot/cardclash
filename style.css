@@ -2941,6 +2941,7 @@ html, body {
 }
 
 .hero-panel {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2952,6 +2953,26 @@ html, body {
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     inset 0 -2px 3px rgba(0, 0, 0, 0.5),
     0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* The online opponent's display name (a real username, or the matchmaking
+   bot's random one) — a small nameplate anchored above their hero panel. */
+.opponent-name-badge {
+  position: absolute;
+  top: -9px;
+  left: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--gold-light);
+  background: #1b140f;
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hero-face {

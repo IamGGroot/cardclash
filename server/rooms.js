@@ -7,7 +7,7 @@
 // but not about what happens.
 import crypto from 'node:crypto';
 import { newGame } from '../src/battle.js';
-import { getHero, cardsForFaction } from '../src/cards.js';
+import { CARDS, getHero } from '../src/cards.js';
 import {
   applyLevelUp,
   applySpecial,
@@ -18,6 +18,7 @@ import {
   applyEndTurn,
 } from '../src/actions.js';
 import { runAutoDeckTurnSteps } from '../src/autoDeck.js';
+import { runAiTurnSteps } from '../src/ai.js';
 import { viewFor, mirrorStep } from './protocol.js';
 import { recordMatchResult, applyMatchTrophies, getOrCreateAccount } from './accounts.js';
 import { env } from './env.js';
@@ -29,9 +30,69 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I — easi
 
 // Quick Match pairs the closest trophy count available; the acceptable gap
 // widens the longer someone's been waiting, so a lone player in a quiet
-// lobby still eventually gets matched instead of waiting forever.
+// lobby still eventually gets matched instead of waiting forever. Since
+// there's no offline vs-AI mode on the client anymore (online-only per
+// product decision), anyone who's waited QUICK_MATCH_BOT_TIMEOUT_MS without
+// a real opponent gets matched against a bot standing in as one instead —
+// see matchWithBot() below.
 const QUICK_MATCH_BASE_GAP = 150;
 const QUICK_MATCH_GAP_PER_SEC = 25;
+const QUICK_MATCH_BOT_TIMEOUT_MS = Number(env('QUICK_MATCH_BOT_TIMEOUT_MS', '5000'));
+// Randomized "thinking time" before each of the bot's actions, so its turns
+// don't play out instantly like a script — wide enough to read as a person
+// deciding, not so wide it feels like lag.
+const BOT_STEP_DELAY_MIN_MS = Number(env('BOT_STEP_DELAY_MIN_MS', '600'));
+const BOT_STEP_DELAY_MAX_MS = Number(env('BOT_STEP_DELAY_MAX_MS', '2200'));
+
+// A pregenerated pool of gamertag-style names for the matchmaking bot
+// fallback — deliberately distinct from accounts.js's auto-generated
+// "JugadorNNNN" default so a bot opponent reads as a real chosen username.
+const BOT_NAMES = [
+  'DragónVeloz', 'SombraNocturna', 'GuerreroDeAlba', 'FuriaIgnara', 'LoboDeAcero',
+  'CazadorEstelar', 'AlmaDePiedra', 'VientoOscuro', 'LlamaEterna', 'CuervoBlanco',
+  'EspadaSilente', 'RayoCarmesí', 'HielorFatal', 'CenizaViva', 'GolemAncestral',
+  'FenixCaído', 'NocheEterna', 'PuñoDeHierro', 'AlbaSagrada', 'TormentaGris',
+  'SangreFria', 'RaízProfunda', 'EcoDelAbismo', 'GarraSalvaje', 'MurallaViva',
+  'DestellosDeUmbra', 'CazadorSilente', 'RunaDorada', 'PielDePiedra', 'VozDelBosque',
+];
+
+function randomBotName() {
+  return BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+}
+
+function randomDelay(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+// Mirrors src/store.js's client-side buildAiDeck(): a random 16-card deck
+// pulled from the whole card pool, any faction mix — matching how a real
+// player's own freeform deck can look (see store.js's deck rework).
+function buildBotDeck() {
+  const pool = [...CARDS].sort(() => Math.random() - 0.5);
+  const deck = {};
+  let total = 0;
+  for (const card of pool) {
+    if (total >= DECK_SIZE) break;
+    const take = Math.min(MAX_COPIES, DECK_SIZE - total);
+    deck[card.id] = take;
+    total += take;
+  }
+  return deck;
+}
+
+function createBotOpponent(autoPlay) {
+  const factions = Object.keys(HEROES_BY_FACTION);
+  const faction = factions[Math.floor(Math.random() * factions.length)];
+  return {
+    ws: null,
+    token: `bot-${crypto.randomUUID()}`,
+    faction,
+    deck: buildBotDeck(),
+    autoPlay,
+    isBot: true,
+    botName: randomBotName(),
+  };
+}
 
 const rooms = new Map(); // code -> room
 const wsToPlayer = new Map(); // ws -> { code, side }
@@ -51,15 +112,18 @@ function generateCode() {
 }
 
 // A deck is a { cardId: count } map, same shape as save.deck on the client
-// (a single freeform deck, not split by faction). Reject anything a
-// legitimate deckbuilder couldn't produce
-// rather than trusting the client's arithmetic.
-export function validateDeck(deck, faction) {
+// (a single freeform deck, not split by faction — see store.js's deck
+// rework, decks can mix any faction's cards freely now). Reject anything a
+// legitimate deckbuilder couldn't produce rather than trusting the
+// client's arithmetic. A player's chosen faction/hero (special ability +
+// attribute track) is validated separately and has no bearing on which
+// cards are legal in their deck.
+const ALL_CARD_IDS = new Set(CARDS.map((c) => c.id));
+export function validateDeck(deck) {
   if (!deck || typeof deck !== 'object') return false;
-  const legalIds = new Set([...cardsForFaction(faction), ...cardsForFaction('neutral')].map((c) => c.id));
   let total = 0;
   for (const [cardId, count] of Object.entries(deck)) {
-    if (!legalIds.has(cardId)) return false;
+    if (!ALL_CARD_IDS.has(cardId)) return false;
     if (!Number.isInteger(count) || count < 0 || count > MAX_COPIES) return false;
     total += count;
   }
@@ -86,10 +150,23 @@ function makeRoom(code, quickMatch) {
   return room;
 }
 
-function attachPlayer(room, side, { ws, token, faction, deck, autoPlay }) {
-  room.players[side] = { ws, token, faction, deck, autoPlay: Boolean(autoPlay), disconnectTimer: null };
-  wsToPlayer.set(ws, { code: room.code, side });
-  tokenToRoom.set(token, room.code);
+function attachPlayer(room, side, { ws, token, faction, deck, autoPlay, isBot, botName }) {
+  room.players[side] = {
+    ws,
+    token,
+    faction,
+    deck,
+    autoPlay: Boolean(autoPlay),
+    isBot: Boolean(isBot),
+    botName: botName || null,
+    disconnectTimer: null,
+  };
+  // Bots have no real socket to reconnect, so skip tracking them for that —
+  // their token is just a throwaway id, not worth indexing.
+  if (ws) {
+    wsToPlayer.set(ws, { code: room.code, side });
+    tokenToRoom.set(token, room.code);
+  }
 }
 
 function startMatch(room, { perkThreshold } = {}) {
@@ -106,13 +183,21 @@ function startMatch(room, { perkThreshold } = {}) {
       type: 'matchStart',
       code: room.code,
       opponentFaction: opponent.faction,
+      opponentName: opponentDisplayName(opponent),
       state: viewFor(room.state, side),
     });
   }
   // Fire-and-forget: newGame() always leaves p1 active, so if that side is
-  // an Autodeckbuilder deck its turn needs to start driving itself right
-  // away instead of waiting on an action that will never arrive.
+  // an Autodeckbuilder deck or the matchmaking bot fallback, its turn needs
+  // to start driving itself right away instead of waiting on an action that
+  // will never arrive.
   runAutoPlayTurns(room);
+  runBotOpponentTurns(room);
+}
+
+function opponentDisplayName(player) {
+  if (player.isBot) return player.botName;
+  return getOrCreateAccount(player.token).username;
 }
 
 function findHero(faction) {
@@ -147,7 +232,7 @@ export function startDirectMatch(playerA, playerB, { perkThreshold, quickMatch =
 }
 
 export function createRoom({ ws, token, faction, deck, autoPlay }) {
-  if (!validateDeck(deck, faction)) return { error: 'Mazo inválido.' };
+  if (!validateDeck(deck)) return { error: 'Mazo inválido.' };
   const code = generateCode();
   const room = makeRoom(code, false);
   attachPlayer(room, 'p1', { ws, token, faction, deck, autoPlay });
@@ -159,7 +244,7 @@ export function joinRoom({ ws, token, code, faction, deck, autoPlay }) {
   const room = rooms.get(String(code || '').toUpperCase());
   if (!room) return { error: 'No existe una sala con ese código.' };
   if (room.players.p2) return { error: 'Esa sala ya está completa.' };
-  if (!validateDeck(deck, faction)) return { error: 'Mazo inválido.' };
+  if (!validateDeck(deck)) return { error: 'Mazo inválido.' };
   attachPlayer(room, 'p2', { ws, token, faction, deck, autoPlay });
   startMatch(room);
   return { code: room.code };
@@ -197,6 +282,8 @@ function pairFromQueue() {
     if (bestI === -1) break;
     const b = quickQueue.splice(bestJ, 1)[0];
     const a = quickQueue.splice(bestI, 1)[0];
+    clearTimeout(a.botTimer);
+    clearTimeout(b.botTimer);
     const code = generateCode();
     const room = makeRoom(code, true);
     attachPlayer(room, 'p1', a);
@@ -206,26 +293,51 @@ function pairFromQueue() {
   }
 }
 
+// Fires QUICK_MATCH_BOT_TIMEOUT_MS after an entry joins the queue — if it's
+// still waiting by then (no real opponent found), matches it against a bot
+// standing in for one instead of leaving the player waiting indefinitely,
+// since there's no offline vs-AI mode to fall back to anymore.
+function matchWithBot(entry) {
+  const idx = quickQueue.indexOf(entry);
+  if (idx === -1) return; // already matched with a real player in the meantime
+  quickQueue.splice(idx, 1);
+  const bot = createBotOpponent(entry.autoPlay);
+  const code = generateCode();
+  const room = makeRoom(code, true);
+  attachPlayer(room, 'p1', entry);
+  attachPlayer(room, 'p2', bot);
+  startMatch(room);
+}
+
 export function queueQuickMatch({ ws, token, faction, deck, autoPlay }) {
-  if (!validateDeck(deck, faction)) return { error: 'Mazo inválido.' };
+  if (!validateDeck(deck)) return { error: 'Mazo inválido.' };
   // Drop any stale queue entry for this token (e.g. a reconnect/retry).
   const existingIdx = quickQueue.findIndex((q) => q.token === token);
-  if (existingIdx !== -1) quickQueue.splice(existingIdx, 1);
+  if (existingIdx !== -1) {
+    clearTimeout(quickQueue[existingIdx].botTimer);
+    quickQueue.splice(existingIdx, 1);
+  }
 
   const trophies = getOrCreateAccount(token).trophies || 0;
-  quickQueue.push({ ws, token, faction, deck, autoPlay, trophies, queuedAt: Date.now() });
+  const entry = { ws, token, faction, deck, autoPlay, trophies, queuedAt: Date.now(), botTimer: null };
+  quickQueue.push(entry);
   pairFromQueue();
   // Pairing may have already matched this exact entry above — only tell the
-  // caller they're queued if they're still waiting.
-  if (quickQueue.some((q) => q.ws === ws)) {
+  // caller they're queued (and start the bot-fallback timer) if they're
+  // still waiting.
+  if (quickQueue.includes(entry)) {
     send(ws, { type: 'queued' });
+    entry.botTimer = setTimeout(() => matchWithBot(entry), QUICK_MATCH_BOT_TIMEOUT_MS);
   }
   return {};
 }
 
 export function cancelQuickMatch(ws) {
   const idx = quickQueue.findIndex((q) => q.ws === ws);
-  if (idx !== -1) quickQueue.splice(idx, 1);
+  if (idx !== -1) {
+    clearTimeout(quickQueue[idx].botTimer);
+    quickQueue.splice(idx, 1);
+  }
 }
 
 function endMatch(room, winnerSide) {
@@ -235,8 +347,14 @@ function endMatch(room, winnerSide) {
   for (const side of ['p1', 'p2']) {
     const player = room.players[side];
     if (!player) continue;
-    recordMatchResult(player.token, side === winnerSide);
-    const { trophies, delta } = applyMatchTrophies(player.token, side === winnerSide);
+    // The bot fallback isn't a real account — recording its "results" would
+    // just accumulate throwaway rows in the account store for no reason.
+    let trophies = 0;
+    let delta = 0;
+    if (!player.isBot) {
+      recordMatchResult(player.token, side === winnerSide);
+      ({ trophies, delta } = applyMatchTrophies(player.token, side === winnerSide));
+    }
     send(player.ws, {
       type: 'matchEnd',
       state: viewFor(room.state, side),
@@ -293,6 +411,44 @@ async function runAutoPlayTurns(room) {
       const endStep = applyEndTurn(room.state);
       if (endStep) broadcastStep(room, endStep);
       await sleep(AUTO_PLAY_STEP_DELAY_MS);
+    }
+  } finally {
+    room.autoPlaying = false;
+  }
+}
+
+// Drives the matchmaking bot fallback's turn (Modo Normal only — an
+// Autodeckbuilder-mode bot instead gets autoPlay:true and is handled by
+// runAutoPlayTurns above, same 1-card-per-turn logic a human's own
+// Autodeckbuilder deck uses). Uses the full ai.js turn logic — deploy,
+// spells, attacks, hero action — with a randomized pause before each step
+// so the bot doesn't play out its whole turn instantly. Shares
+// room.autoPlaying as its reentrancy guard with runAutoPlayTurns; safe
+// because a given active side is never both autoPlay and isBot-non-auto at
+// once, and both functions bail out synchronously (before any await) when
+// it's not their kind of side to drive, so the guard is never left stuck.
+async function runBotOpponentTurns(room) {
+  if (room.autoPlaying) return;
+  room.autoPlaying = true;
+  try {
+    while (!room.finished && room.state && !room.state.winner) {
+      const side = room.state.active;
+      const player = room.players[side];
+      if (!player || !player.isBot || player.autoPlay) return;
+
+      await sleep(randomDelay(BOT_STEP_DELAY_MIN_MS, BOT_STEP_DELAY_MAX_MS));
+      for (const step of runAiTurnSteps(room.state, side)) {
+        broadcastStep(room, step);
+        if (room.state.winner) break;
+        await sleep(randomDelay(BOT_STEP_DELAY_MIN_MS, BOT_STEP_DELAY_MAX_MS));
+      }
+      if (room.state.winner) {
+        endMatch(room, room.state.winner);
+        return;
+      }
+      const endStep = applyEndTurn(room.state);
+      if (endStep) broadcastStep(room, endStep);
+      await sleep(randomDelay(BOT_STEP_DELAY_MIN_MS, BOT_STEP_DELAY_MAX_MS));
     }
   } finally {
     room.autoPlaying = false;
@@ -371,9 +527,13 @@ export function handleAction(ws, action) {
 
   broadcastStep(room, step);
   if (state.winner) endMatch(room, state.winner);
-  // Whatever just happened may have handed the turn to an autoPlay side
-  // (most commonly: this was an endTurn) — no-ops immediately if not.
-  else runAutoPlayTurns(room);
+  else {
+    // Whatever just happened may have handed the turn to an autoPlay side or
+    // the matchmaking bot fallback (most commonly: this was an endTurn) —
+    // both no-op immediately if the newly-active side isn't theirs to drive.
+    runAutoPlayTurns(room);
+    runBotOpponentTurns(room);
+  }
 }
 
 function toCanonicalTarget(target, senderSide) {
@@ -428,7 +588,14 @@ export function tryReconnect(ws, token) {
 
   const opponent = room.players[otherSide(side)];
   send(opponent && opponent.ws, { type: 'opponentReconnected' });
-  send(ws, { type: 'matchStart', code, opponentFaction: opponent.faction, state: viewFor(room.state, side), reconnected: true });
+  send(ws, {
+    type: 'matchStart',
+    code,
+    opponentFaction: opponent.faction,
+    opponentName: opponentDisplayName(opponent),
+    state: viewFor(room.state, side),
+    reconnected: true,
+  });
   return true;
 }
 

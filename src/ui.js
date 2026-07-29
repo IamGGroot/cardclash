@@ -90,6 +90,7 @@ let p1AutoPlay = false; // true while the player's own side is an Autodeckbuilde
 let onlineRoom = null; // { code } once a real match against another player is live
 let onlineIntent = null; // { mode: 'quick'|'create'|'join', code? } set right before startOnlineMatch()
 let onlineStatus = null; // { kind: 'connecting'|'queued'|'creating'|'waitingCode'|'joining'|'error', message?, code? } drives renderOnlineWaiting
+let opponentName = null; // display name for the current online match's opponent — a real username, or the matchmaking bot's random name
 let pendingTrophyResult = null; // { trophies, delta } from the most recent online matchEnd, consumed once by endMatch()
 
 // ---- Guided first-battle tutorial coach ----
@@ -2415,6 +2416,7 @@ function isDeckReady(auto = false) {
 function playSelectedDeck(mode, auto = false) {
   if (!isDeckReady(auto)) {
     showToast(`Completá tu mazo${auto ? ' 🤖 Auto' : ''} (${Store.CONSTANTS.DECK_SIZE} cartas) en "Mis Mazos" antes de jugar.`);
+    deckMode = auto ? 'auto' : 'normal';
     go('deckSelect');
     return;
   }
@@ -2649,6 +2651,7 @@ function setupNetListeners() {
   Net.on('matchStart', (msg) => {
     battle = msg.state;
     onlineRoom = { code: msg.code };
+    opponentName = msg.opponentName || null;
     onlineIntent = null;
     onlineStatus = null;
     prevOccupancy = new Set();
@@ -2964,6 +2967,7 @@ function heroPanelHtml(state, side, highlights) {
 
   return `
     <div class="hero-panel ${isEnemy ? 'enemy' : 'player'}">
+      ${isEnemy && opponentName ? `<div class="opponent-name-badge">${escapeHtml(opponentName)}</div>` : ''}
       <div class="hero-face ${faceHighlight}" data-side="${side}">
         <div class="hp-badge" data-tooltip="Puntos de vida">❤️ ${p.hp}</div>
         <div class="resource-badge" data-tooltip="Recursos disponibles este turno">🔷 ${p.resource}/${p.resourceMax}</div>

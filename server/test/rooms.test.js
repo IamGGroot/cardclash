@@ -126,6 +126,27 @@ describe('room lifecycle over real WebSocket connections', () => {
     b.close();
   });
 
+  test('accepts a deck that freely mixes cards from multiple factions (deck building is no longer mono-faction)', async () => {
+    const a = await connect();
+    const b = await connect();
+    const identA = await identify(a, null);
+    const identB = await identify(b, null);
+
+    a.send(JSON.stringify({ type: 'createRoom', token: identA.account.token, faction: 'albura', deck: fullDeck('a') }));
+    const created = await nextMessage(a);
+
+    // 4 Albura + 4 Ignara + 4 Terra + 4 neutral = 16, even though the
+    // player's own hero (chosen below) is Ignara.
+    const mixedDeck = { a1: 2, a2: 2, g1: 2, g2: 2, t1: 2, t2: 2, n1: 2, n2: 2 };
+    b.send(JSON.stringify({ type: 'joinRoom', token: identB.account.token, code: created.code, faction: 'ignara', deck: mixedDeck }));
+    const [matchStartA, matchStartB] = await Promise.all([nextMessage(a), nextMessage(b)]);
+    assert.equal(matchStartA.type, 'matchStart');
+    assert.equal(matchStartB.type, 'matchStart');
+
+    a.close();
+    b.close();
+  });
+
   test('an action from the wrong player (not their turn) is rejected, and a legal endTurn syncs both sides', async () => {
     const a = await connect();
     const b = await connect();
