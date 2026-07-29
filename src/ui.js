@@ -23,6 +23,8 @@ import * as SeasonPass from './seasonPass.js';
 import * as Ladder from './ladder.js';
 import * as Draft from './draft.js';
 import * as Tournament from './tournament.js';
+import * as Achievements from './achievements.js';
+import * as Stats from './stats.js';
 import { sfx, vibrate, setSoundEnabled, isSoundEnabled, setHapticsEnabled, isHapticsEnabled } from './sound.js';
 import * as Net from './net.js';
 
@@ -53,6 +55,7 @@ let pendingPlacement = null; // { idx, card } while choosing a slot for a creatu
 let pendingTarget = null; // { idx, card } while choosing a target for a spell/fortune
 let selectedAttacker = null; // { laneIndex, row } while choosing an attack target
 let missionsTabExpanded = false; // home screen's side tab, toggled by tap (desktop also gets :hover)
+let missionsScreenTab = 'daily'; // which sub-tab the Misiones screen is showing: 'daily' or an Achievements category id
 let prevOccupancy = new Set();
 let suppressClick = false; // set right after a drag-drop resolves, to swallow the click that follows
 let battleMenuOpen = false;
@@ -168,8 +171,19 @@ function startDailyResetTimer(elId, onExpire) {
   dailyResetTimerId = setInterval(tick, 1000);
 }
 
+// Achievements' one computed (non-`save.stats`) statKey — season pass level
+// is already tracked live by seasonPass.js, so achievements.js reads it via
+// this override instead of duplicating a counter for it.
+function achievementOverrides() {
+  return { seasonPassLevel: SeasonPass.getLevel(save) };
+}
+
+function totalMissionsClaimable() {
+  return Missions.countClaimable(save) + Achievements.countClaimable(save, achievementOverrides());
+}
+
 function header() {
-  const missionsClaimable = Missions.countClaimable(save);
+  const missionsClaimable = totalMissionsClaimable();
   const spClaimable = SeasonPass.countClaimable(save);
   return `
     <div class="topbar">
@@ -365,7 +379,8 @@ function sortedMissionsForWidget() {
 
 function renderHome() {
   Ladder.ensureLadderSave(save);
-  const claimable = Missions.countClaimable(save);
+  const claimable = totalMissionsClaimable();
+  const dailyClaimable = Missions.countClaimable(save);
   const spClaimable = SeasonPass.countClaimable(save);
   const ladderClaimable = Ladder.countClaimable(save);
   const widgetMissions = sortedMissionsForWidget().slice(0, 3);
@@ -464,7 +479,7 @@ function renderHome() {
           <h3>🎯 Misiones diarias</h3>
           <div class="missions-widget-header-right">
             <span id="missions-reset-timer" class="missions-widget-timer"></span>
-            ${claimable ? `<span class="missions-widget-badge">${claimable} para reclamar</span>` : ''}
+            ${dailyClaimable ? `<span class="missions-widget-badge">${dailyClaimable} para reclamar</span>` : ''}
           </div>
         </div>
         ${widgetMissions.map((m) => missionRowHtml(m, true)).join('')}
@@ -529,6 +544,7 @@ function renderHome() {
         return;
       }
       save.draftEntries -= 1;
+      Stats.bumpStat(save, 'entriesConsumed', 1);
       persist();
       startDraftEntry();
     };
@@ -548,6 +564,7 @@ function renderHome() {
         return;
       }
       save.tournamentEntries -= 1;
+      Stats.bumpStat(save, 'entriesConsumed', 1);
       persist();
       startTournamentEntry();
     };
@@ -605,6 +622,7 @@ function wireMissionClaimButtons(rerender) {
       const mission = Missions.MISSIONS.find((m) => m.id === btn.dataset.claim);
       if (Missions.claimMission(save, btn.dataset.claim)) {
         SeasonPass.addSeasonXp(save, MISSION_XP_BY_DIFFICULTY[mission?.difficulty] || 0);
+        Stats.bumpStat(save, 'dailyMissionsClaimedTotal', 1);
         persist();
         sfx.coin();
         vibrate(10);
@@ -620,7 +638,7 @@ function missionProgressBarHtml(progress) {
   return `<div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>`;
 }
 
-function renderMissions() {
+function dailyMissionsTabHtml() {
   const overall = Missions.getOverallProgress(save);
   const sections = Object.values(Missions.MISSION_CATEGORIES)
     .map((cat) => {
@@ -638,24 +656,143 @@ function renderMissions() {
         </div>`;
     })
     .join('');
+  return `
+    <p class="hint">Se reinician todos los días. ¡Volvé mañana por más!</p>
+    <div class="deck-progress">
+      <div class="deck-progress-label">Progreso total del día · ${overall.current}/${overall.target}</div>
+      ${missionProgressBarHtml(overall)}
+    </div>
+    ${sections}`;
+}
+
+// One reward-and-progress row for a permanent achievement — visually the
+// same component as a daily mission row (missionRowHtml), just fed from
+// achievements.js instead of missions.js and without the season-XP line,
+// since achievements are a separate, non-resetting reward track.
+function achievementRowHtml(achievement, overrides) {
+  const progress = Achievements.getAchievementProgress(save, achievement, overrides);
+  const complete = Achievements.isAchievementComplete(save, achievement, overrides);
+  const claimed = Achievements.isAchievementClaimed(save, achievement.id);
+  const pct = Math.round((progress / achievement.target) * 100);
+  const rewardParts = [];
+  if (achievement.reward.coins) rewardParts.push(`🪙 ${achievement.reward.coins}`);
+  if (achievement.reward.gems) rewardParts.push(`💎 ${achievement.reward.gems}`);
+  if (achievement.reward.dust) rewardParts.push(`✨ ${achievement.reward.dust}`);
+  if (achievement.reward.draftEntries) rewardParts.push(`🎴 ${achievement.reward.draftEntries}`);
+  if (achievement.reward.tournamentEntries) rewardParts.push(`🏆 ${achievement.reward.tournamentEntries}`);
+  return `
+    <div class="mission-row ${claimed ? 'claimed' : ''}">
+      <div class="mission-row-main">
+        <div class="mission-row-title">
+          <span class="mission-diff mission-diff-${achievement.difficulty}">${Achievements.DIFFICULTY_LABEL[achievement.difficulty]}</span>
+          <strong class="${claimed ? 'mission-title-done' : ''}">${achievement.title}</strong>
+        </div>
+        <div class="mission-row-text">${achievement.text}</div>
+        <div class="mission-progress-bar"><div class="mission-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
+        <div class="mission-row-progress-label">${progress}/${achievement.target}</div>
+      </div>
+      <div class="mission-row-side">
+        <div class="mission-reward">${rewardParts.join(' ') || '—'}</div>
+        ${
+          claimed
+            ? `<span class="mission-claimed-tag">Reclamado ✓</span>`
+            : `<button class="btn small mission-claim-btn" data-ach-claim="${achievement.id}" ${complete ? '' : 'disabled'}>Reclamar</button>`
+        }
+      </div>
+    </div>`;
+}
+
+// The 5-dot tier strip above each chain's active row — done/ready/locked so
+// the whole block-of-5 is visible at a glance, but only the active tier's
+// full row (with its own claim button) is ever expanded. This is what makes
+// a chain "progressive": tier 4 is invisible-as-a-target until tier 3 is
+// claimed, same idea as the trophy road's locked-until-reached tiers.
+function chainDotsHtml(tiers, overrides) {
+  return `<div class="chain-dots">${tiers
+    .map((t) => {
+      const claimed = Achievements.isAchievementClaimed(save, t.id);
+      const complete = Achievements.isAchievementComplete(save, t, overrides);
+      const cls = claimed ? 'done' : complete ? 'ready' : 'locked';
+      return `<span class="chain-dot ${cls}" data-tooltip="${escapeHtml(t.title)} — objetivo ${t.target}">${claimed ? '✓' : t.tier}</span>`;
+    })
+    .join('')}</div>`;
+}
+
+function achievementChainCardHtml(tiers, overrides) {
+  const active = Achievements.getActiveChainTier(save, tiers[0].chain, overrides);
+  return `
+    <div class="chain-card">
+      ${chainDotsHtml(tiers, overrides)}
+      ${achievementRowHtml(active, overrides)}
+    </div>`;
+}
+
+function achievementSectionTabHtml(categoryId) {
+  const overrides = achievementOverrides();
+  const cat = Achievements.ACH_SECTIONS[categoryId];
+  const chains = Achievements.getSectionChains(categoryId);
+  const claimedCount = Achievements.ACHIEVEMENTS.filter((a) => a.category === categoryId && Achievements.isAchievementClaimed(save, a.id)).length;
+  const totalCount = chains.reduce((sum, tiers) => sum + tiers.length, 0);
+  return `
+    <p class="hint">${cat.icon} ${cat.label} — logros permanentes, nunca se reinician. ${claimedCount}/${totalCount} reclamados.</p>
+    ${chains.map((tiers) => achievementChainCardHtml(tiers, overrides)).join('')}`;
+}
+
+function wireAchievementClaimButtons(rerender) {
+  app.querySelectorAll('[data-ach-claim]').forEach((btn) => {
+    btn.onclick = () => {
+      const res = Achievements.claimAchievement(save, btn.dataset.achClaim, achievementOverrides());
+      if (res.ok) {
+        persist();
+        sfx.coin();
+        vibrate(10);
+        rerenderPreservingScroll(rerender);
+      }
+    };
+  });
+}
+
+function renderMissions() {
+  const dailyClaimable = Missions.countClaimable(save);
+  const overrides = achievementOverrides();
+  const tabsHtml = [
+    { id: 'daily', icon: '📅', label: 'Diarias', count: dailyClaimable },
+    ...Object.values(Achievements.ACH_SECTIONS).map((cat) => ({
+      id: cat.id,
+      icon: cat.icon,
+      label: cat.label,
+      count: Achievements.countClaimableInSection(save, cat.id, overrides),
+    })),
+  ]
+    .map(
+      (tab) => `
+      <button class="mission-tab ${missionsScreenTab === tab.id ? 'active' : ''}" data-mtab="${tab.id}">
+        ${tab.icon} ${tab.label}${tab.count ? `<span class="badge-count">${tab.count}</span>` : ''}
+      </button>`
+    )
+    .join('');
+  const contentHtml = missionsScreenTab === 'daily' ? dailyMissionsTabHtml() : achievementSectionTabHtml(missionsScreenTab);
   app.innerHTML = `
     ${header()}
     <div class="screen">
       <div class="screen-header">
         <button class="btn back" id="back">← Volver</button>
-        <h2>Misiones diarias</h2>
-        <span id="missions-reset-timer-full" class="missions-widget-timer screen-header-timer"></span>
+        <h2>Misiones</h2>
+        ${missionsScreenTab === 'daily' ? '<span id="missions-reset-timer-full" class="missions-widget-timer screen-header-timer"></span>' : ''}
       </div>
-      <p class="hint">Se reinician todos los días. ¡Volvé mañana por más!</p>
-      <div class="deck-progress">
-        <div class="deck-progress-label">Progreso total del día · ${overall.current}/${overall.target}</div>
-        ${missionProgressBarHtml(overall)}
-      </div>
-      ${sections}
+      <div class="mission-tabs">${tabsHtml}</div>
+      ${contentHtml}
     </div>`;
   document.getElementById('back').onclick = () => go('home');
+  app.querySelectorAll('[data-mtab]').forEach((btn) => {
+    btn.onclick = () => {
+      missionsScreenTab = btn.dataset.mtab;
+      renderMissions();
+    };
+  });
   wireMissionClaimButtons(renderMissions);
-  startDailyResetTimer('missions-reset-timer-full', renderMissions);
+  wireAchievementClaimButtons(renderMissions);
+  if (missionsScreenTab === 'daily') startDailyResetTimer('missions-reset-timer-full', renderMissions);
 }
 
 const TUTORIAL_SECTIONS = [
@@ -780,6 +917,7 @@ function renderSeasonPass() {
       const [levelStr, track] = btn.dataset.spClaim.split(':');
       const res = SeasonPass.claimReward(save, Number(levelStr), track);
       if (res.ok) {
+        Stats.bumpStat(save, 'seasonRewardsClaimed', 1);
         persist();
         sfx.coin();
         vibrate(10);
@@ -866,6 +1004,7 @@ function renderLadder(fetchFresh = true, scrollToCurrent = fetchFresh) {
     btn.onclick = () => {
       const res = Ladder.claimTierReward(save, btn.dataset.ladderClaim);
       if (res.ok) {
+        Stats.bumpStat(save, 'ladderTiersClaimed', 1);
         persist();
         sfx.coin();
         vibrate(10);
@@ -1277,6 +1416,8 @@ function renderFriends() {
     try {
       await Net.addFriend(code);
       input.value = '';
+      Stats.bumpStat(save, 'friendsAdded', 1);
+      persist();
       showToast('Amigo agregado ✅');
       loadFriends();
     } catch (err) {
@@ -1551,6 +1692,7 @@ function renderCollection() {
   document.getElementById('auto-disenchant').onclick = () => {
     const res = Store.disenchantExcess(save);
     if (res.cardsAffected > 0) {
+      Stats.bumpStat(save, 'dustEarned', res.totalDust);
       persist();
       sfx.coin();
       showToast(`+${res.totalDust} de polvo ✨ (${res.cardsAffected} carta${res.cardsAffected > 1 ? 's' : ''})`);
@@ -1561,6 +1703,7 @@ function renderCollection() {
     btn.onclick = () => {
       const res = Store.disenchant(save, btn.dataset.disenchant);
       if (res.ok) {
+        Stats.bumpStat(save, 'dustEarned', res.dustGained);
         persist();
         showToast(`+${res.dustGained} de polvo ✨`);
         renderCollection();
@@ -1571,6 +1714,7 @@ function renderCollection() {
     btn.onclick = () => {
       const res = Store.craft(save, btn.dataset.craft);
       if (res.ok) {
+        Stats.bumpStat(save, 'cardsCrafted', 1);
         persist();
         renderCollection();
       } else if (res.reason === 'dust') {
@@ -1779,6 +1923,7 @@ function buyDailyDeal(dealId) {
     if (result.reason === 'balance') showToast('Saldo insuficiente para esta carta.');
     return;
   }
+  Stats.bumpStat(save, 'dailyDealsBought', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -1793,6 +1938,7 @@ function tryBuyPack(packId) {
   }
   if (pack.currency === 'coins') save.coins -= pack.cost;
   else save.gems -= pack.cost;
+  Stats.bumpStat(save, 'shopPurchases', 1);
   persist();
   pendingPackId = packId;
   go('packOpen');
@@ -1803,6 +1949,7 @@ function buyWelcomeOffer() {
   save.coins += WELCOME_OFFER.coins;
   save.gems += WELCOME_OFFER.gems;
   save.welcomeOfferClaimed = true;
+  Stats.bumpStat(save, 'shopPurchases', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -1816,6 +1963,7 @@ function buyArenaOffer(arenaId) {
   save.coins += offer.coins;
   save.gems += offer.gems;
   save.claimedArenaOffers.push(arenaId);
+  Stats.bumpStat(save, 'shopPurchases', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -1823,6 +1971,8 @@ function buyArenaOffer(arenaId) {
 
 function buyDraftEntrySku() {
   save.draftEntries = (save.draftEntries || 0) + 1;
+  Stats.bumpStat(save, 'shopPurchases', 1);
+  Stats.bumpStat(save, 'entriesBought', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -1830,6 +1980,8 @@ function buyDraftEntrySku() {
 
 function buyTournamentEntrySku() {
   save.tournamentEntries = (save.tournamentEntries || 0) + 1;
+  Stats.bumpStat(save, 'shopPurchases', 1);
+  Stats.bumpStat(save, 'entriesBought', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -1839,6 +1991,8 @@ function buyDraftBundle() {
   if (save.draftBundleClaimed) return;
   save.draftEntries = (save.draftEntries || 0) + Draft.DRAFT_BUNDLE_SKU.entries;
   save.draftBundleClaimed = true;
+  Stats.bumpStat(save, 'shopPurchases', 1);
+  Stats.bumpStat(save, 'entriesBought', Draft.DRAFT_BUNDLE_SKU.entries);
   persist();
   sfx.coin();
   renderShop();
@@ -1848,6 +2002,8 @@ function buyTournamentBundle() {
   if (save.tournamentBundleClaimed) return;
   save.tournamentEntries = (save.tournamentEntries || 0) + Tournament.TOURNAMENT_BUNDLE_SKU.entries;
   save.tournamentBundleClaimed = true;
+  Stats.bumpStat(save, 'shopPurchases', 1);
+  Stats.bumpStat(save, 'entriesBought', Tournament.TOURNAMENT_BUNDLE_SKU.entries);
   persist();
   sfx.coin();
   renderShop();
@@ -1919,6 +2075,7 @@ function openPendingPack(envelope) {
     const cards = openPack(packId);
     Store.addCardsToCollection(save, cards);
     Missions.addMissionProgress(save, 'packsOpened', 1);
+    Stats.bumpStat(save, 'packsOpened', 1);
     persist();
     sfx.coin();
     lastPackReveal = cards;
@@ -1953,6 +2110,8 @@ function watchAd(returnScreen = 'shop') {
   setTimeout(() => {
     save.coins += AD_REWARD.coins;
     Missions.addMissionProgress(save, 'adsWatched', 1);
+    Stats.bumpStat(save, 'adsWatched', 1);
+    Stats.bumpStat(save, 'coinsEarned', AD_REWARD.coins);
     persist();
     sfx.coin();
     go(returnScreen);
@@ -1962,6 +2121,7 @@ function watchAd(returnScreen = 'shop') {
 function mockPurchase(skuId) {
   const sku = GEM_SKUS.find((s) => s.id === skuId);
   save.gems += sku.gems;
+  Stats.bumpStat(save, 'shopPurchases', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -1970,6 +2130,7 @@ function mockPurchase(skuId) {
 function mockPurchaseCoins(skuId) {
   const sku = COIN_SKUS.find((s) => s.id === skuId);
   save.coins += sku.coins;
+  Stats.bumpStat(save, 'shopPurchases', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -1978,6 +2139,7 @@ function mockPurchaseCoins(skuId) {
 function mockPurchaseDust(skuId) {
   const sku = DUST_SKUS.find((s) => s.id === skuId);
   save.dust = (save.dust || 0) + sku.dust;
+  Stats.bumpStat(save, 'shopPurchases', 1);
   persist();
   sfx.coin();
   renderShop();
@@ -2285,6 +2447,8 @@ function endMatch(winner) {
   }
   const trophyResult = pendingTrophyResult;
   pendingTrophyResult = null;
+  const wasOnline = !!onlineRoom;
+  const wasAutoPlay = p1AutoPlay;
   onlineRoom = null;
   p1AutoPlay = false;
   const won = winner === 'p1';
@@ -2295,8 +2459,19 @@ function endMatch(winner) {
   Missions.addMissionProgress(save, 'heroDamage', battle.stats.heroDamageDealt);
   Missions.addMissionProgress(save, 'creaturesKilled', battle.stats.creaturesKilled);
   Missions.addMissionProgress(save, 'creaturesPlayed', battle.stats.creaturesPlayed);
+  Stats.bumpStat(save, 'battles', 1);
+  Stats.bumpStat(save, won ? 'wins' : 'losses', 1);
+  Stats.bumpStat(save, 'heroDamage', battle.stats.heroDamageDealt);
+  Stats.bumpStat(save, 'creaturesKilled', battle.stats.creaturesKilled);
+  Stats.bumpStat(save, 'creaturesPlayed', battle.stats.creaturesPlayed);
+  Stats.bumpStat(save, 'coinsEarned', reward.coins);
+  if (wasOnline && won) Stats.bumpStat(save, 'onlineWins', 1);
+  if (wasAutoPlay) Stats.bumpStat(save, 'autoDeckMatches', 1);
   SeasonPass.addSeasonXp(save, won ? SeasonPass.XP_REWARDS.matchWin : SeasonPass.XP_REWARDS.matchLoss);
-  if (trophyResult) Ladder.syncTrophies(save, trophyResult.trophies);
+  if (trophyResult) {
+    Ladder.syncTrophies(save, trophyResult.trophies);
+    Stats.bumpStatMax(save, 'peakTrophies', save.trophies);
+  }
   persist();
   if (won) {
     sfx.win();
@@ -2420,6 +2595,7 @@ function syncAccountToSave(account, seq) {
   save.googleLinked = Boolean(account.googleLinked);
   save.googleEmail = account.email || null;
   Ladder.syncTrophies(save, account.trophies);
+  Stats.bumpStatMax(save, 'peakTrophies', save.trophies);
   persist();
 }
 
@@ -2508,13 +2684,21 @@ function setupNetListeners() {
     screen = 'reveal';
     render();
   });
-  Net.on('draftPrize', (msg) => bracketPrizeReveal(msg.prize));
+  Net.on('draftPrize', (msg) => {
+    Stats.bumpStat(save, 'draftsPlayed', 1);
+    if (msg.prize?.packs?.includes('gem_pack')) Stats.bumpStat(save, 'draftsWon', 1);
+    bracketPrizeReveal(msg.prize);
+  });
 
   Net.on('tournamentQueued', (msg) => {
     tournamentQueueStatus = { waiting: msg.waiting, needed: msg.needed };
     if (screen === 'tournamentWaiting') render();
   });
-  Net.on('tournamentPrize', (msg) => bracketPrizeReveal(msg.prize));
+  Net.on('tournamentPrize', (msg) => {
+    Stats.bumpStat(save, 'tournamentsPlayed', 1);
+    if (msg.prize?.packs?.includes('gem_pack')) Stats.bumpStat(save, 'tournamentsWon', 1);
+    bracketPrizeReveal(msg.prize);
+  });
 }
 
 // ---------------- Battle screen ----------------
@@ -3814,8 +3998,18 @@ function wireTooltips(scope = document) {
   });
 }
 
+function trackLoginDay() {
+  const today = new Date().toISOString().slice(0, 10);
+  Stats.ensureStats(save);
+  if (save.stats.lastLoginDate === today) return;
+  save.stats.lastLoginDate = today;
+  Stats.bumpStat(save, 'loginDays', 1);
+  persist();
+}
+
 export function init() {
   setupNetListeners();
+  trackLoginDay();
   if (!save.selectedFaction) {
     // Brand-new save: nothing owned yet, no faction chosen — onboarding
     // handles both the starter deck grant and the guided first battle, so

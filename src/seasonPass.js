@@ -1,3 +1,5 @@
+import { bumpStat } from './stats.js';
+
 const SEASON_LENGTH_DAYS = 14;
 const XP_PER_LEVEL = 100;
 const MAX_LEVEL = 30;
@@ -57,6 +59,10 @@ export function ensureSeasonPass(save) {
   const today = todayStr();
   const sp = save.seasonPass;
   if (!sp || daysBetween(sp.startDate, today) >= SEASON_LENGTH_DAYS) {
+    // Only a real rollover (an existing season expiring), not the very
+    // first save ever created, counts toward the permanent "lived through
+    // N seasons" achievement.
+    if (sp) bumpStat(save, 'seasonsCompleted', 1);
     save.seasonPass = { startDate: today, xp: 0, premiumUnlocked: false, claimedFree: [], claimedPremium: [] };
   }
   return save.seasonPass;
