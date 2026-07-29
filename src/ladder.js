@@ -31,6 +31,47 @@ export const ARENAS = [
   },
 }));
 
+// Trophy road: besides the 9 big arena milestones above, Clash Royale-style
+// ladders also hand out a small chest every few hundred trophies *within*
+// each arena, so there's always a nearby reward to chase instead of one big
+// gap. Fine-grained chest tiers are generated between each arena and the
+// next at a fixed trophy interval; the arena's own milestone is folded into
+// the same list (as a 'arena'-kind tier, id === arena.id, unchanged from
+// before) so existing claimedTiers data for arena rewards keeps working.
+const TIER_STEP = 100;
+
+function buildChestReward(arenaIndex, stepIndex) {
+  return {
+    coins: 15 + arenaIndex * 8 + stepIndex * 2,
+    gems: stepIndex % 3 === 0 ? 5 + arenaIndex * 2 : 0,
+    dust: stepIndex % 4 === 0 ? 10 + arenaIndex * 4 : 0,
+  };
+}
+
+function buildTiers() {
+  const tiers = [];
+  for (let i = 0; i < ARENAS.length; i++) {
+    const arena = ARENAS[i];
+    tiers.push({ id: arena.id, arenaId: arena.id, kind: 'arena', threshold: arena.threshold, icon: arena.icon, name: arena.name, reward: arena.reward });
+    const next = ARENAS[i + 1];
+    if (!next) continue;
+    const steps = Math.floor((next.threshold - arena.threshold) / TIER_STEP);
+    for (let s = 1; s < steps; s++) {
+      tiers.push({
+        id: `${arena.id}_t${s}`,
+        arenaId: arena.id,
+        kind: 'chest',
+        threshold: arena.threshold + s * TIER_STEP,
+        icon: '🎁',
+        reward: buildChestReward(i, s),
+      });
+    }
+  }
+  return tiers;
+}
+
+export const TIERS = buildTiers();
+
 export function getArenaIndex(trophies) {
   let idx = 0;
   for (let i = 0; i < ARENAS.length; i++) {
@@ -71,32 +112,32 @@ export function syncTrophies(save, trophies) {
   if (typeof trophies === 'number') save.trophies = trophies;
 }
 
-export function isTierClaimed(save, arenaId) {
-  return ensureLadderSave(save).claimedTiers.includes(arenaId);
+export function isTierClaimed(save, tierId) {
+  return ensureLadderSave(save).claimedTiers.includes(tierId);
 }
 
-export function isTierClaimable(save, arenaId) {
-  const arena = ARENAS.find((a) => a.id === arenaId);
-  if (!arena) return false;
+export function isTierClaimable(save, tierId) {
+  const tier = TIERS.find((t) => t.id === tierId);
+  if (!tier) return false;
   ensureLadderSave(save);
-  return save.trophies >= arena.threshold && !isTierClaimed(save, arenaId);
+  return save.trophies >= tier.threshold && !isTierClaimed(save, tierId);
 }
 
-export function claimTierReward(save, arenaId) {
-  if (!isTierClaimable(save, arenaId)) return { ok: false };
-  const arena = ARENAS.find((a) => a.id === arenaId);
-  save.coins += arena.reward.coins || 0;
-  save.gems += arena.reward.gems || 0;
-  save.dust = (save.dust || 0) + (arena.reward.dust || 0);
-  save.draftEntries = (save.draftEntries || 0) + (arena.reward.draftEntries || 0);
-  save.tournamentEntries = (save.tournamentEntries || 0) + (arena.reward.tournamentEntries || 0);
-  save.ladder.claimedTiers.push(arenaId);
-  return { ok: true, reward: arena.reward };
+export function claimTierReward(save, tierId) {
+  if (!isTierClaimable(save, tierId)) return { ok: false };
+  const tier = TIERS.find((t) => t.id === tierId);
+  save.coins += tier.reward.coins || 0;
+  save.gems += tier.reward.gems || 0;
+  save.dust = (save.dust || 0) + (tier.reward.dust || 0);
+  save.draftEntries = (save.draftEntries || 0) + (tier.reward.draftEntries || 0);
+  save.tournamentEntries = (save.tournamentEntries || 0) + (tier.reward.tournamentEntries || 0);
+  save.ladder.claimedTiers.push(tierId);
+  return { ok: true, reward: tier.reward };
 }
 
 export function countClaimable(save) {
   ensureLadderSave(save);
-  return ARENAS.filter((a) => isTierClaimable(save, a.id)).length;
+  return TIERS.filter((t) => isTierClaimable(save, t.id)).length;
 }
 
 export function getProgressToNextArena(save) {

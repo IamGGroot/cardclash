@@ -789,33 +789,39 @@ function renderSeasonPass() {
   });
 }
 
-function ladderArenaRowHtml(arena, index) {
-  const reached = save.trophies >= arena.threshold;
-  const claimed = Ladder.isTierClaimed(save, arena.id);
-  const claimable = Ladder.isTierClaimable(save, arena.id);
-  const isCurrent = index === Ladder.getArenaIndex(save.trophies);
+// One node of the trophy road — either a big 'arena' milestone (own icon +
+// name, the league itself) or a small 'chest' in between (Clash Royale-style
+// filler reward so there's always something close to reach). `isCurrent`
+// marks the single nearest unreached tier, which gets a pulsing highlight
+// and is what the screen auto-scrolls to on open.
+function trophyRoadNodeHtml(tier, isCurrent) {
+  const reached = save.trophies >= tier.threshold;
+  const claimed = Ladder.isTierClaimed(save, tier.id);
+  const claimable = Ladder.isTierClaimable(save, tier.id);
   const rewardParts = [];
-  if (arena.reward.coins) rewardParts.push(`🪙${arena.reward.coins}`);
-  if (arena.reward.gems) rewardParts.push(`💎${arena.reward.gems}`);
-  if (arena.reward.dust) rewardParts.push(`✨${arena.reward.dust}`);
-  if (arena.reward.draftEntries) rewardParts.push(`🎴${arena.reward.draftEntries}`);
-  if (arena.reward.tournamentEntries) rewardParts.push(`🏆${arena.reward.tournamentEntries}`);
+  if (tier.reward.coins) rewardParts.push(`🪙${tier.reward.coins}`);
+  if (tier.reward.gems) rewardParts.push(`💎${tier.reward.gems}`);
+  if (tier.reward.dust) rewardParts.push(`✨${tier.reward.dust}`);
+  if (tier.reward.draftEntries) rewardParts.push(`🎴${tier.reward.draftEntries}`);
+  if (tier.reward.tournamentEntries) rewardParts.push(`🏆${tier.reward.tournamentEntries}`);
   return `
-    <div class="ladder-arena-row ${reached ? 'reached' : 'locked'} ${isCurrent ? 'current' : ''}">
-      <div class="ladder-arena-icon">${arena.icon}</div>
-      <div class="ladder-arena-main">
-        <div class="ladder-arena-name">${arena.name}${isCurrent ? '<span class="ladder-current-tag">Liga actual</span>' : ''}</div>
-        <div class="ladder-arena-threshold">${arena.threshold} 🏆</div>
-      </div>
-      <div class="ladder-arena-side">
-        <div class="ladder-arena-reward">${rewardParts.join(' ') || '—'}</div>
-        ${
-          claimed
-            ? '<span class="sp-reward-tag">✓</span>'
-            : reached
-              ? `<button class="btn tiny" data-ladder-claim="${arena.id}" ${claimable ? '' : 'disabled'}>Reclamar</button>`
-              : '<span class="ladder-arena-lock">🔒</span>'
-        }
+    <div class="road-node ${tier.kind} ${reached ? 'reached' : 'locked'} ${isCurrent ? 'current' : ''}" ${isCurrent ? 'id="road-current-node"' : ''}>
+      <div class="road-node-connector"><div class="road-node-dot">${tier.icon}</div></div>
+      <div class="road-node-card">
+        <div class="road-node-info">
+          <div class="road-node-title">${tier.kind === 'arena' ? tier.name : 'Cofre'}${isCurrent ? '<span class="ladder-current-tag">Próximo</span>' : ''}</div>
+          <div class="road-node-threshold">${tier.threshold} 🏆</div>
+        </div>
+        <div class="road-node-right">
+          <div class="road-node-reward">${rewardParts.join(' ') || '—'}</div>
+          ${
+            claimed
+              ? '<span class="sp-reward-tag">✓</span>'
+              : reached
+                ? `<button class="btn tiny" data-ladder-claim="${tier.id}" ${claimable ? '' : 'disabled'}>Reclamar</button>`
+                : '<span class="ladder-arena-lock">🔒</span>'
+          }
+        </div>
       </div>
     </div>`;
 }
@@ -824,9 +830,10 @@ function ladderArenaRowHtml(arena, index) {
 // WS connection needed) once when the screen is first opened. Re-renders
 // triggered from within this screen (claiming a reward, the fetch itself
 // resolving) pass false so they don't keep re-triggering more fetches.
-function renderLadder(fetchFresh = true) {
+function renderLadder(fetchFresh = true, scrollToCurrent = fetchFresh) {
   Ladder.ensureLadderSave(save);
   const progress = Ladder.getProgressToNextArena(save);
+  const nextTier = Ladder.TIERS.find((t) => save.trophies < t.threshold);
 
   app.innerHTML = `
     ${header()}
@@ -850,8 +857,8 @@ function renderLadder(fetchFresh = true) {
             : '<p class="hint">¡Llegaste a la liga más alta!</p>'
         }
       </div>
-      <p class="hint">Los trofeos se ganan y se pierden jugando partidas Online. Cada liga que alcances queda desbloqueada para siempre.</p>
-      <div class="ladder-arenas">${Ladder.ARENAS.map((a, i) => ladderArenaRowHtml(a, i)).join('')}</div>
+      <p class="hint">Los trofeos se ganan y se pierden jugando partidas Online. Subí de trofeos para desbloquear ligas y cofres en el camino — cada uno queda ganado para siempre.</p>
+      <div class="trophy-road">${Ladder.TIERS.map((t) => trophyRoadNodeHtml(t, !!nextTier && t.id === nextTier.id)).join('')}</div>
     </div>`;
   document.getElementById('back').onclick = () => go('home');
   document.getElementById('btn-leaderboard').onclick = () => go('leaderboard');
@@ -867,13 +874,22 @@ function renderLadder(fetchFresh = true) {
     };
   });
 
+  if (scrollToCurrent) {
+    // Jump the road to whatever tier is coming up next — with ~50 tiers on
+    // the full road the interesting spot is rarely the top of the scroll.
+    // Skipped on claim-triggered re-renders, which go through
+    // rerenderPreservingScroll and restore the user's own scroll position.
+    const currentNode = document.getElementById('road-current-node');
+    if (currentNode) currentNode.scrollIntoView({ block: 'center' });
+  }
+
   if (fetchFresh) {
     const seq = nextAccountSyncSeq();
     Net.fetchAccount()
       .then((account) => {
         if (!account || screen !== 'ladder') return;
         syncAccountToSave(account, seq);
-        renderLadder(false);
+        renderLadder(false, true);
       })
       .catch(() => {});
   }

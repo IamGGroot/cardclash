@@ -990,48 +990,6 @@ html, body {
   font-weight: 700;
 }
 
-.ladder-arenas {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.ladder-arena-row {
-  display: grid;
-  grid-template-columns: 36px 1fr auto;
-  gap: 10px;
-  align-items: center;
-  border: 1px solid #2a3358;
-  border-radius: 10px;
-  padding: 8px 10px;
-  background: var(--bg-alt);
-  opacity: 0.55;
-}
-
-.ladder-arena-row.reached {
-  opacity: 1;
-}
-
-.ladder-arena-row.current {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.3), 0 0 12px -4px rgba(212, 175, 55, 0.5);
-}
-
-.ladder-arena-icon {
-  font-size: 22px;
-  text-align: center;
-}
-
-.ladder-arena-name {
-  font-weight: 700;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 .ladder-current-tag {
   font-size: 9px;
   text-transform: uppercase;
@@ -1043,27 +1001,158 @@ html, body {
   font-weight: 700;
 }
 
-.ladder-arena-threshold {
+.ladder-arena-lock {
+  font-size: 13px;
+  opacity: 0.6;
+}
+
+/* Trophy road: a Clash Royale-style vertical path of nodes — big 'arena'
+   milestones and small 'chest' fillers in between, connected by a line that
+   lights up gold as each node is reached. */
+.trophy-road {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+}
+
+.road-node {
+  display: flex;
+  gap: 12px;
+  padding-bottom: 14px;
+  opacity: 0.55;
+}
+
+.road-node.reached {
+  opacity: 1;
+}
+
+.road-node:last-child {
+  padding-bottom: 0;
+}
+
+.road-node-connector {
+  position: relative;
+  width: 40px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.road-node-connector::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: -14px;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  background: #2a3358;
+}
+
+.road-node:last-child .road-node-connector::before {
+  display: none;
+}
+
+.road-node.reached .road-node-connector::before {
+  background: var(--gold);
+}
+
+.road-node-dot {
+  position: relative;
+  z-index: 1;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  background: var(--bg-alt);
+  border: 2px solid #2a3358;
+  margin-top: 4px;
+}
+
+.road-node.arena .road-node-dot {
+  width: 44px;
+  height: 44px;
+  font-size: 22px;
+  margin-top: 0;
+  background: linear-gradient(160deg, rgba(212, 175, 55, 0.22), rgba(212, 175, 55, 0.04));
+}
+
+.road-node.reached .road-node-dot {
+  border-color: var(--gold);
+}
+
+.road-node.current .road-node-dot {
+  box-shadow: 0 0 0 4px rgba(212, 175, 55, 0.28);
+  animation: roadPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes roadPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(212, 175, 55, 0.28); }
+  50% { box-shadow: 0 0 0 9px rgba(212, 175, 55, 0.12); }
+}
+
+.road-node-card {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #2a3358;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  min-width: 0;
+}
+
+.road-node.arena .road-node-card {
+  padding: 10px 12px;
+}
+
+.road-node.current .road-node-card {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.3), 0 0 12px -4px rgba(212, 175, 55, 0.5);
+}
+
+.road-node-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.road-node-title {
+  font-weight: 700;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.road-node.arena .road-node-title {
+  font-size: 14px;
+}
+
+.road-node-threshold {
   font-size: 11px;
   color: var(--text-dim);
 }
 
-.ladder-arena-side {
+.road-node-right {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
+  flex-shrink: 0;
 }
 
-.ladder-arena-reward {
+.road-node-reward {
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
-}
-
-.ladder-arena-lock {
-  font-size: 13px;
-  opacity: 0.6;
 }
 
 .trophy-delta {

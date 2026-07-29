@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ARENAS,
+  TIERS,
   TROPHY_WIN,
   TROPHY_LOSS,
   getArenaIndex,
@@ -29,6 +30,31 @@ describe('ladder data integrity', () => {
     assert.equal(new Set(ids).size, ids.length);
     for (const arena of ARENAS) {
       assert.ok(arena.reward && typeof arena.reward.coins === 'number', `${arena.id} missing a coins reward`);
+    }
+  });
+});
+
+describe('trophy road (TIERS)', () => {
+  test('is sorted by strictly increasing threshold and starts at trophy 0', () => {
+    assert.equal(TIERS[0].threshold, 0);
+    for (let i = 1; i < TIERS.length; i++) {
+      assert.ok(TIERS[i].threshold > TIERS[i - 1].threshold, `tier ${TIERS[i].id} threshold must exceed ${TIERS[i - 1].id}`);
+    }
+  });
+
+  test('every tier has a unique id, and each arena milestone keeps its arena id unchanged', () => {
+    const ids = TIERS.map((t) => t.id);
+    assert.equal(new Set(ids).size, ids.length);
+    for (const arena of ARENAS) {
+      assert.ok(ids.includes(arena.id), `${arena.id}'s own milestone tier must keep using the arena id`);
+    }
+  });
+
+  test('chest tiers between arenas carry a reward but no draft/tournament entries', () => {
+    const chests = TIERS.filter((t) => t.kind === 'chest');
+    assert.ok(chests.length > 0, 'expected at least one chest tier between arenas');
+    for (const chest of chests) {
+      assert.ok(typeof chest.reward.coins === 'number' && chest.reward.coins > 0);
     }
   });
 });
@@ -119,12 +145,27 @@ describe('client save helpers', () => {
     assert.equal(save.coins, ARENAS[1].reward.coins, 'reward must not be granted twice');
   });
 
-  test('countClaimable counts every reached-and-unclaimed tier', () => {
+  test('countClaimable counts every reached-and-unclaimed tier, arenas and chests alike', () => {
     const save = freshSave();
     syncTrophies(save, ARENAS[3].threshold);
-    assert.equal(countClaimable(save), 4); // arenas 0..3 all reached
+    const expected = TIERS.filter((t) => t.threshold <= ARENAS[3].threshold).length;
+    assert.ok(expected > 4, 'chest tiers should push the count above the 4 arena-only milestones');
+    assert.equal(countClaimable(save), expected);
     claimTierReward(save, ARENAS[0].id);
-    assert.equal(countClaimable(save), 3);
+    assert.equal(countClaimable(save), expected - 1);
+  });
+
+  test('a chest tier between two arenas can be claimed independently of the arena milestone', () => {
+    const chest = TIERS.find((t) => t.kind === 'chest');
+    const save = freshSave();
+    syncTrophies(save, chest.threshold);
+    assert.equal(isTierClaimable(save, chest.id), true);
+    const res = claimTierReward(save, chest.id);
+    assert.equal(res.ok, true);
+    assert.equal(save.coins, chest.reward.coins);
+    // The arena milestone this chest belongs to is a separate tier — still
+    // unclaimed even though its chest just was.
+    assert.equal(isTierClaimed(save, chest.arenaId), false);
   });
 
   test('getProgressToNextArena reports the upcoming arena and a 0-100 pct', () => {
