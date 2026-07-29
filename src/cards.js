@@ -61,6 +61,7 @@ export const CARDS = [
   { id: 'a23', faction: 'albura', name: 'Bendición del Alba Eterna', rarity: 'epic', type: 'fortune', cost: 5, requirement: 5, target: 'ally_creature', effect: 'buff_3_3', value: 3, silhouette: 'heal', text: 'Una criatura aliada gana +3/+3.' },
   { id: 'a24', faction: 'albura', name: 'Serafín Custodio', rarity: 'legendary', type: 'creature', cost: 6, requirement: 6, placement: 'flyer', atk: 6, retaliate: 5, life: 8, silhouette: 'phoenix', ability: { trigger: 'onDeploy', effect: 'heal_hero_4' }, text: 'Al desplegarse: curá 4 a tu héroe.' },
   { id: 'a25', faction: 'albura', name: 'Concilio de Alba', rarity: 'legendary', type: 'fortune', cost: 6, requirement: 6, target: 'none', effect: 'draw_3', silhouette: 'heal', text: 'Robá 3 cartas.' },
+  { id: 'a26', faction: 'albura', name: 'Muro de Alba', rarity: 'common', type: 'creature', cost: 1, requirement: 1, placement: 'melee', atk: 0, retaliate: 3, life: 5, silhouette: 'wall', building: true, text: 'Fortificado: no puede atacar ni moverse.' },
 
   // ---- IGNARA ----
   { id: 'g1', faction: 'ignara', name: 'Chispa Menor', rarity: 'common', type: 'creature', cost: 1, requirement: 1, placement: 'flyer', atk: 1, retaliate: 0, life: 1, silhouette: 'raven' },
@@ -88,6 +89,7 @@ export const CARDS = [
   { id: 'g24', faction: 'ignara', name: 'Tormenta de Ignara', rarity: 'epic', type: 'spell', cost: 5, requirement: 5, target: 'enemy_any', effect: 'damage_5', value: 5, silhouette: 'fireball', text: '5 de daño a una criatura o al héroe enemigo.' },
   { id: 'g25', faction: 'ignara', name: 'Devorador de Cenizas', rarity: 'legendary', type: 'creature', cost: 6, requirement: 6, placement: 'flyer', atk: 6, retaliate: 4, life: 7, silhouette: 'dragon', ability: { trigger: 'onCombatDamage', effect: 'damage_enemy_hero_2' }, text: 'Cuando hace daño en combate: 2 de daño directo al héroe enemigo.' },
   { id: 'g26', faction: 'ignara', name: 'Tormenta Eterna', rarity: 'legendary', type: 'fortune', cost: 6, requirement: 6, target: 'none', effect: 'damage_6_hero', value: 6, silhouette: 'fireball', text: '6 de daño directo al héroe enemigo.' },
+  { id: 'g27', faction: 'ignara', name: 'Fragua de Guerra', rarity: 'common', type: 'creature', cost: 1, requirement: 1, placement: 'melee', atk: 0, retaliate: 2, life: 4, silhouette: 'wall', building: true, text: 'Fortificado: no puede atacar ni moverse.' },
 
   // ---- UMBRA ----
   { id: 'u1', faction: 'umbra', name: 'Hueso Errante', rarity: 'common', type: 'creature', cost: 1, requirement: 1, placement: 'melee', atk: 1, retaliate: 1, life: 1, silhouette: 'warrior' },
@@ -115,6 +117,7 @@ export const CARDS = [
   { id: 'u23', faction: 'umbra', name: 'Señora de las Sombras', rarity: 'epic', type: 'creature', cost: 5, requirement: 5, placement: 'flyer', atk: 5, retaliate: 3, life: 5, silhouette: 'dragon', ability: { trigger: 'onCombatDamage', effect: 'heal_hero_2' }, text: 'Cuando hace daño en combate: curá 2 a tu héroe.' },
   { id: 'u24', faction: 'umbra', name: 'Liche Soberano', rarity: 'legendary', type: 'creature', cost: 6, requirement: 6, placement: 'melee', atk: 6, retaliate: 4, life: 7, silhouette: 'necromancer', ability: { trigger: 'onDeploy', effect: 'reanimate_to_play' }, text: 'Al desplegarse: devolvé una criatura al azar de tu cementerio directamente al campo de batalla.' },
   { id: 'u25', faction: 'umbra', name: 'Corona de la Perdición', rarity: 'legendary', type: 'fortune', cost: 5, requirement: 5, target: 'none', effect: 'draw_3', silhouette: 'necromancer', text: 'Robá 3 cartas.' },
+  { id: 'u26', faction: 'umbra', name: 'Tumba Sellada', rarity: 'common', type: 'creature', cost: 1, requirement: 1, placement: 'melee', atk: 0, retaliate: 2, life: 5, silhouette: 'wall', building: true, text: 'Fortificado: no puede atacar ni moverse.' },
 
   // ---- TERRA (clanes de piedra — orcos, ogros y cíclopes de las cumbres) ----
   { id: 't1', faction: 'terra', name: 'Goblin Merodeador', rarity: 'common', type: 'creature', cost: 1, requirement: 1, placement: 'melee', atk: 2, retaliate: 0, life: 1, silhouette: 'warrior' },
@@ -142,6 +145,7 @@ export const CARDS = [
   { id: 't23', faction: 'terra', name: 'Gran Behemot de Terra', rarity: 'legendary', type: 'creature', cost: 6, requirement: 6, placement: 'melee', atk: 8, retaliate: 5, life: 9, silhouette: 'titan' },
   { id: 't24', faction: 'terra', name: 'Señor de los Clanes', rarity: 'legendary', type: 'creature', cost: 6, requirement: 6, placement: 'melee', atk: 7, retaliate: 4, life: 7, silhouette: 'golem', ability: { trigger: 'onDeploy', effect: 'damage_enemy_hero_2' }, text: 'Al desplegarse: 2 de daño directo al héroe enemigo.' },
   { id: 't25', faction: 'terra', name: 'Grito de Guerra Ancestral', rarity: 'legendary', type: 'fortune', cost: 6, requirement: 6, target: 'none', effect: 'damage_4_hero', value: 4, silhouette: 'storm', text: '4 de daño directo al héroe enemigo.' },
+  { id: 't26', faction: 'terra', name: 'Bastión de Piedra', rarity: 'common', type: 'creature', cost: 1, requirement: 1, placement: 'melee', atk: 0, retaliate: 4, life: 6, silhouette: 'wall', building: true, text: 'Fortificado: no puede atacar ni moverse.' },
 
   // ---- GREMIO ERRANTE (jugables en cualquier mazo, algo más débiles) ----
   { id: 'n1', faction: 'neutral', name: 'Golem de Piedra', rarity: 'common', type: 'creature', cost: 3, requirement: 2, placement: 'melee', atk: 2, retaliate: 1, life: 2, silhouette: 'golem' },

@@ -88,8 +88,10 @@ export function startTurn(state, side) {
   p.resource = p.resourceMax;
   p.heroActionUsed = false;
   for (const lane of p.battlefield) {
-    if (lane.front) lane.front.canAttack = true;
-    if (lane.back) lane.back.canAttack = true;
+    // Buildings (see cards.js) are static — they hold their slot and can be
+    // attacked, but never act themselves, so they never become ready.
+    if (lane.front && !getCard(lane.front.cardId).building) lane.front.canAttack = true;
+    if (lane.back && !getCard(lane.back.cardId).building) lane.back.canAttack = true;
   }
   draw(state, side, 1);
 }

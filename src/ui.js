@@ -1,6 +1,6 @@
 import { CARDS, getCard, getHero, HEROES, FACTIONS, cardsForFaction, RARITY_COLORS, RARITY_LABEL } from './cards.js';
 import * as Store from './store.js';
-import { PACKS, GEM_SKUS, COIN_SKUS, DUST_SKUS, WELCOME_OFFER, SEASON_PASS_SKU, openPack, matchReward, AD_REWARD } from './economy.js';
+import { PACKS, GEM_SKUS, COIN_SKUS, DUST_SKUS, WELCOME_OFFER, SEASON_PASS_SKU, getArenaOffer, openPack, matchReward, AD_REWARD } from './economy.js';
 import {
   newGame,
   levelUpAttribute,
@@ -85,6 +85,13 @@ function rerenderPreservingScroll(renderFn) {
   const screenEl = document.querySelector('.screen');
   const scrollTop = screenEl ? screenEl.scrollTop : 0;
   renderFn();
+  // renderFn replaces the whole app.innerHTML (topbar included), same as
+  // the router's render() — so it needs the same post-render rewiring, or
+  // the freshly-rebuilt topbar (claim badges, profile chip, ☰ menu) and any
+  // tooltips on this screen are left with no listeners at all.
+  wireTooltips();
+  wireHeader();
+  wireCardTilt();
   const nextScreenEl = document.querySelector('.screen');
   if (nextScreenEl) nextScreenEl.scrollTop = scrollTop;
 }
@@ -259,11 +266,13 @@ function attrLabel(attr) {
   return attr === 'might' ? 'F' : attr === 'magic' ? 'M' : 'D';
 }
 
-function placementIcon(placement) {
+function placementIcon(placement, building) {
+  if (building) return '🏰';
   return placement === 'melee' ? '🗡' : placement === 'shooter' ? '🏹' : '🪽';
 }
 
-function placementLabel(placement) {
+function placementLabel(placement, building) {
+  if (building) return 'Edificación — fortificado, no ataca ni se mueve';
   return placement === 'melee' ? 'Cuerpo a cuerpo' : placement === 'shooter' ? 'A distancia' : 'Volador';
 }
 
@@ -293,7 +302,7 @@ function cardTooltip(card) {
     `Coste: ${card.cost} · Requiere ${attrFullLabel(attr)} ${card.requirement}`,
   ];
   if (card.type === 'creature') {
-    lines.push(`Tipo: Criatura (${placementLabel(card.placement)})`);
+    lines.push(`Tipo: Criatura (${placementLabel(card.placement, card.building)})`);
     lines.push(`Ataque ${card.atk} · Contraataque ${card.retaliate} · Vida ${card.life}`);
   } else {
     lines.push(`Tipo: ${typeLabel(card.type)}`);
@@ -316,7 +325,7 @@ function cardVisual(card, extraClasses = '') {
       <div class="req-badge req-${attr}">${attrLabel(attr)}${card.requirement}</div>
       <div class="card-art">${cardArtSVG(card)}</div>
       ${isFoil ? '<div class="foil-sheen"></div>' : ''}
-      ${card.type === 'creature' ? `<div class="placement-tag">${placementIcon(card.placement)}</div>` : ''}
+      ${card.type === 'creature' ? `<div class="placement-tag">${placementIcon(card.placement, card.building)}</div>` : ''}
       <div class="card-name">${card.name}</div>
       ${statsHtml}
     </div>`;
@@ -412,6 +421,8 @@ function renderHome() {
       </button>
     </div>
 
+    <button class="ad-watch-fab" id="home-watch-ad" data-tooltip="Mirar video para ganar ${AD_REWARD.coins} monedas">📺</button>
+
     <div class="missions-tab-wrap ${missionsTabExpanded ? 'expanded' : ''}" id="missions-tab-wrap">
       <aside class="missions-widget missions-tab-panel">
         <div class="missions-widget-header">
@@ -437,6 +448,7 @@ function renderHome() {
   document.getElementById('btn-shop').onclick = () => go('shop');
   document.getElementById('btn-missions').onclick = () => go('missions');
   document.getElementById('btn-league-strip').onclick = () => go('ladder');
+  document.getElementById('home-watch-ad').onclick = () => watchAd('home');
   const backdrop = document.getElementById('play-menu-backdrop');
   if (backdrop) {
     backdrop.onclick = () => {
@@ -1483,6 +1495,22 @@ function renderShop() {
       <button class="btn primary" id="buy-welcome-offer">Comprar por ${WELCOME_OFFER.priceLabel}</button>
     </div>`;
 
+  const arenaOfferHtml = (() => {
+    const arenaIdx = Ladder.getArenaIndex(save.trophies || 0);
+    if (arenaIdx === 0) return ''; // starting arena — everyone begins here, not a milestone
+    const arena = Ladder.ARENAS[arenaIdx];
+    if ((save.claimedArenaOffers || []).includes(arena.id)) return '';
+    const offer = getArenaOffer(arena.id);
+    if (!offer) return '';
+    return `
+    <div class="welcome-offer">
+      <div class="welcome-offer-badge">${arena.icon} ¡Subiste de liga!</div>
+      <h3>${offer.label}</h3>
+      <div class="welcome-offer-rewards">🪙 ${offer.coins} &nbsp;+&nbsp; 💎 ${offer.gems}</div>
+      <button class="btn primary" id="buy-arena-offer" data-arena="${arena.id}">Comprar por ${offer.priceLabel}</button>
+    </div>`;
+  })();
+
   const dailyDeals = DailyDeals.ensureDailyDeals(save).deals;
   const dailyDealsHtml = dailyDeals
     .map((deal) => {
@@ -1505,6 +1533,7 @@ function renderShop() {
       <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Tienda</h2></div>
 
       ${welcomeOfferHtml}
+      ${arenaOfferHtml}
 
       <h3>🗓️ Tienda del Día</h3>
       <p class="hint">Tres cartas al azar: común, rara y una premium (normalmente épica, rara vez legendaria). Se renuevan mañana.</p>
@@ -1553,6 +1582,8 @@ function renderShop() {
   document.getElementById('watch-ad').onclick = () => watchAd();
   const welcomeBtn = document.getElementById('buy-welcome-offer');
   if (welcomeBtn) welcomeBtn.onclick = () => buyWelcomeOffer();
+  const arenaOfferBtn = document.getElementById('buy-arena-offer');
+  if (arenaOfferBtn) arenaOfferBtn.onclick = () => buyArenaOffer(arenaOfferBtn.dataset.arena);
   app.querySelectorAll('[data-sku]').forEach((btn) => {
     btn.onclick = () => mockPurchase(btn.dataset.sku);
   });
@@ -1600,6 +1631,19 @@ function buyWelcomeOffer() {
   save.coins += WELCOME_OFFER.coins;
   save.gems += WELCOME_OFFER.gems;
   save.welcomeOfferClaimed = true;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function buyArenaOffer(arenaId) {
+  if (!save.claimedArenaOffers) save.claimedArenaOffers = [];
+  if (save.claimedArenaOffers.includes(arenaId)) return;
+  const offer = getArenaOffer(arenaId);
+  if (!offer) return;
+  save.coins += offer.coins;
+  save.gems += offer.gems;
+  save.claimedArenaOffers.push(arenaId);
   persist();
   sfx.coin();
   renderShop();
@@ -1699,14 +1743,14 @@ function spawnPackBurst(envelope) {
   setTimeout(() => burst.remove(), 700);
 }
 
-function watchAd() {
+function watchAd(returnScreen = 'shop') {
   app.innerHTML = `${header()}<div class="screen"><h2>📺 Reproduciendo anuncio…</h2><p>(simulado)</p></div>`;
   setTimeout(() => {
     save.coins += AD_REWARD.coins;
     Missions.addMissionProgress(save, 'adsWatched', 1);
     persist();
     sfx.coin();
-    go('shop');
+    go(returnScreen);
   }, 1500);
 }
 
@@ -2107,7 +2151,7 @@ function slotHtml(state, side, laneIndex, row, highlights) {
 
   const tooltipLines = [
     `${card.name} — ${FACTIONS[card.faction].name}`,
-    `Tipo: Criatura (${placementLabel(card.placement)})`,
+    `Tipo: Criatura (${placementLabel(card.placement, card.building)})`,
     `Ataque ${atk} · Contraataque ${ret} · Vida ${life}`,
   ];
   if (atkClass || retClass || lifeClass) {
@@ -2648,6 +2692,7 @@ function wireHandCardDrag(el, idx) {
     const onUp = () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onCancel);
       if (!dragging) return;
       if (ghost) ghost.remove();
       if (hoverSlot) {
@@ -2666,8 +2711,23 @@ function wireHandCardDrag(el, idx) {
       render();
     };
 
+    // Fires instead of pointerup when the browser decides mid-gesture that
+    // this is actually a horizontal hand-scroll (touch-action: pan-x) and
+    // takes the pointer over — without this, a scroll started on a card
+    // would leave pendingPlacement/the ghost stuck since onUp never runs.
+    const onCancel = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onCancel);
+      if (ghost) ghost.remove();
+      if (hoverSlot) hoverSlot.classList.remove('drag-hover');
+      if (dragging) pendingPlacement = null;
+      render();
+    };
+
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onCancel);
   });
 }
 
@@ -2676,6 +2736,11 @@ function wireHandCardDrag(el, idx) {
 // one gesture covers both actions, replacing the old tap-then-tap flow.
 function wireBoardCreatureDrag(el, laneIndex, row) {
   el.addEventListener('pointerdown', (e) => {
+    // A tap on the face-attack icon is its own click interaction, not a
+    // drag start — letting this handler grab it too means its pointerup
+    // unconditionally clears selectedAttacker (see onUp below) before the
+    // icon's own click handler ever runs, so the tap silently does nothing.
+    if (e.target.closest('.face-attack-icon')) return;
     if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
     const creature = battle.p1.battlefield[laneIndex][row];
     if (!creature || !creature.canAttack) return;

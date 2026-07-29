@@ -587,6 +587,36 @@ html, body {
 /* The home screen's side tab: a slim handle pinned to the right edge that
    slides in on load, then flies the missions panel out on hover (desktop)
    or tap (touch, via the .expanded class toggled in JS). */
+/* Home-only floating shortcut to the same "watch an ad for coins" action
+   already offered in the Tienda — mirrors .missions-tab-wrap's edge but on
+   the left, so it never has to fight it for space. */
+.ad-watch-fab {
+  position: fixed;
+  top: 50%;
+  left: calc(max(0px, (100vw - 480px) / 2) + 10px);
+  transform: translateY(-50%);
+  z-index: 55;
+  appearance: none;
+  cursor: pointer;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  border: 2px solid #ffb020;
+  background: linear-gradient(135deg, #3d8bff, #6a4dff);
+  color: #fff;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  animation: missions-tab-slide-in 0.5s ease-out 0.4s backwards, adWatchFabPulse 2.2s ease-in-out infinite;
+}
+
+@keyframes adWatchFabPulse {
+  0%, 100% { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 0 rgba(255, 176, 32, 0.5); }
+  50% { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 8px rgba(255, 176, 32, 0); }
+}
+
 .missions-tab-wrap {
   position: fixed;
   top: 50%;
@@ -3201,10 +3231,31 @@ html, body {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* "safe center": centers the hand when it fits, but falls back to
+     start-aligned instead of overflowing symmetrically off both edges once
+     it doesn't — plain "center" here would start the hand pre-scrolled
+     past card 1 with no way to tell it's there. */
+  justify-content: safe center;
   gap: 8px;
   overflow-x: auto;
   padding: 6px 8px;
+  /* A visible (not just functional) scrollbar — the hint that there's more
+     to see by swiping sideways when the hand doesn't fit on screen. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 175, 55, 0.5) transparent;
+}
+
+.hand::-webkit-scrollbar {
+  height: 6px;
+}
+
+.hand::-webkit-scrollbar-thumb {
+  background: rgba(212, 175, 55, 0.5);
+  border-radius: 999px;
+}
+
+.hand::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .hand-card {
@@ -3214,7 +3265,11 @@ html, body {
   max-height: 190px;
   min-height: 0;
   transition: transform 0.15s;
-  touch-action: none;
+  /* pan-x (not none) hands horizontal swipes to the browser's native
+     scroll so a hand too wide to fit can be swiped through — vertical
+     drags (playing a card) are still routed to wireHandCardDrag below,
+     since pan-x doesn't claim that axis. */
+  touch-action: pan-x;
 }
 
 .hand-card .card {

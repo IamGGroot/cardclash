@@ -1,4 +1,5 @@
 import { CARDS } from './cards.js';
+import { ARENAS } from './ladder.js';
 
 const WEIGHTS_COIN = { common: 72, rare: 22, epic: 5, legendary: 1 };
 const WEIGHTS_GEM = { common: 45, rare: 33, epic: 17, legendary: 5 };
@@ -30,6 +31,23 @@ export const COIN_SKUS = [
 ];
 
 export const WELCOME_OFFER = { id: 'welcome_offer', label: 'Oferta de Bienvenida', coins: 600, gems: 250, priceLabel: '$2.99' };
+
+// One offer per arena (same "one-time, persists until bought" shape as
+// WELCOME_OFFER) — index 0 (the starting arena) is skipped in the UI since
+// everyone begins there; it's still in this array just to stay index-aligned
+// with Ladder.ARENAS.
+export const ARENA_OFFERS = ARENAS.map((arena, i) => ({
+  id: `arena_offer_${arena.id}`,
+  arenaId: arena.id,
+  label: `¡Llegaste a ${arena.name}!`,
+  coins: 250 + i * 120,
+  gems: 60 + i * 30,
+  priceLabel: `$${(1.99 + Math.max(0, i - 1)).toFixed(2)}`,
+}));
+
+export function getArenaOffer(arenaId) {
+  return ARENA_OFFERS.find((o) => o.arenaId === arenaId);
+}
 
 // Real-money only — deliberately not a gems/coins price, so the premium
 // track can't be bought with an in-game currency that's itself purchasable
