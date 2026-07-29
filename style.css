@@ -3678,6 +3678,21 @@ html, body {
   transform: scale(0.94);
 }
 
+/* This is a mobile-first drag-and-drop card game (lane battlefield, touch
+   gestures, bottom nav) — on a wide browser window we don't try to build a
+   real desktop layout, we just present the same phone-shaped app centered
+   as its own "window" so it reads as intentional rather than a stray narrow
+   column. Constraining #app itself (rather than each screen class
+   individually) means every current and future screen — topbar included —
+   inherits the same width for free. */
 @media (min-width: 600px) {
-  .home, .screen { max-width: 480px; margin: 0 auto; width: 100%; }
+  body {
+    background: #0a0d18;
+  }
+
+  #app {
+    max-width: 480px;
+    margin: 0 auto;
+    box-shadow: 0 0 0 1px #2a3358, 0 20px 60px -10px rgba(0, 0, 0, 0.7);
+  }
 }
