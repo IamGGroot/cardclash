@@ -24,6 +24,17 @@ function buildRewards() {
     if (milestone) {
       premium.gems += 50;
       premium.dust = (premium.dust || 0) + 100;
+      // The premium track's big every-10-levels milestones also throw in a
+      // Draft/Torneo entry — level 30 (the very top of the pass) gives one
+      // of each instead of picking just one.
+      if (level === 30) {
+        premium.draftEntries = 1;
+        premium.tournamentEntries = 1;
+      } else if (level === 20) {
+        premium.tournamentEntries = 1;
+      } else {
+        premium.draftEntries = 1;
+      }
     }
 
     rewards.push({ level, free, premium });
@@ -110,6 +121,8 @@ export function claimReward(save, level, track) {
   save.coins += reward.coins || 0;
   save.gems += reward.gems || 0;
   save.dust = (save.dust || 0) + (reward.dust || 0);
+  save.draftEntries = (save.draftEntries || 0) + (reward.draftEntries || 0);
+  save.tournamentEntries = (save.tournamentEntries || 0) + (reward.tournamentEntries || 0);
   (track === 'premium' ? sp.claimedPremium : sp.claimedFree).push(level);
   return { ok: true, reward };
 }

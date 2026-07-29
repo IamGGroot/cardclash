@@ -177,9 +177,11 @@ function header() {
         <span class="profile-chip-avatar">${avatarInnerHtml(save.avatar)}</span>
         <span class="profile-chip-name">${escapeHtml(save.username || 'Jugador')}</span>
       </button>
-      <div class="currency">🪙 ${save.coins}</div>
-      <div class="currency">💎 ${save.gems}</div>
-      <div class="currency">✨ ${save.dust || 0}</div>
+      <div class="currency" data-tooltip="Monedas">🪙 ${save.coins}</div>
+      <div class="currency" data-tooltip="Gemas">💎 ${save.gems}</div>
+      <div class="currency" data-tooltip="Polvo desencantador">✨ ${save.dust || 0}</div>
+      <div class="currency" data-tooltip="Entradas a Draft">🎴 ${save.draftEntries || 0}</div>
+      <div class="currency" data-tooltip="Entradas a Torneo">🏆 ${save.tournamentEntries || 0}</div>
       ${
         missionsClaimable
           ? `<button class="topbar-claim-btn" id="topbar-claim-missions" data-tooltip="Tenés misiones para reclamar">🎯<span class="topbar-claim-badge">${missionsClaimable}</span></button>`
@@ -421,13 +423,13 @@ function renderHome() {
                <span class="play-menu-icon">🤖🌐</span>
                <span>Autodeckbuilder Online</span>
              </button>
-             <button class="play-menu-option draft" id="play-draft">
+             <button class="play-menu-option draft" id="play-draft" data-tooltip="Abrís 3 sobres de 5 cartas y draftás pack-and-pass + una carta gratis del Gremio Errante, luego jugás un torneo de 4 contra tu pod. 1° Sobre Premium + Sobre de Bronce, 2° Sobre de Bronce, 3°/4° carta común.">
                <span class="play-menu-icon">🎴</span>
-               <span>Draft — ${Draft.DRAFT_ENTRY_SKU.priceLabel}</span>
+               <span>Draft ${save.draftEntries ? `(${save.draftEntries} entrada${save.draftEntries === 1 ? '' : 's'})` : '— sin entradas'}</span>
              </button>
-             <button class="play-menu-option tournament" id="play-tournament">
+             <button class="play-menu-option tournament" id="play-tournament" data-tooltip="Jugás con tu mazo Normal ya armado contra otros 3 jugadores — dos semifinales y una final. Mismos premios que el Draft.">
                <span class="play-menu-icon">🏆</span>
-               <span>Torneo — ${Tournament.TOURNAMENT_ENTRY_SKU.priceLabel}</span>
+               <span>Torneo ${save.tournamentEntries ? `(${save.tournamentEntries} entrada${save.tournamentEntries === 1 ? '' : 's'})` : '— sin entradas'}</span>
              </button>
            </div>`
         : ''
@@ -521,14 +523,33 @@ function renderHome() {
   if (playDraftBtn) {
     playDraftBtn.onclick = () => {
       playMenuOpen = false;
-      go('draftEntry');
+      if (!save.draftEntries) {
+        showToast('No tenés entradas a Draft — comprá una en la Tienda.');
+        go('shop');
+        return;
+      }
+      save.draftEntries -= 1;
+      persist();
+      startDraftEntry();
     };
   }
   const playTournamentBtn = document.getElementById('play-tournament');
   if (playTournamentBtn) {
     playTournamentBtn.onclick = () => {
       playMenuOpen = false;
-      go('tournamentEntry');
+      if (!resolvePlayFaction(false)) {
+        showToast('Elegí un mazo completo en "Mis Mazos" antes de entrar a un torneo.');
+        go('deckSelect');
+        return;
+      }
+      if (!save.tournamentEntries) {
+        showToast('No tenés entradas a Torneo — comprá una en la Tienda.');
+        go('shop');
+        return;
+      }
+      save.tournamentEntries -= 1;
+      persist();
+      startTournamentEntry();
     };
   }
   document.getElementById('btn-pass-banner').onclick = () => go('seasonPass');
@@ -690,6 +711,8 @@ function seasonPassRewardHtml(entry, track) {
   if (reward.coins) parts.push(`🪙${reward.coins}`);
   if (reward.gems) parts.push(`💎${reward.gems}`);
   if (reward.dust) parts.push(`✨${reward.dust}`);
+  if (reward.draftEntries) parts.push(`🎴${reward.draftEntries}`);
+  if (reward.tournamentEntries) parts.push(`🏆${reward.tournamentEntries}`);
   return `
     <div class="sp-reward ${track} ${claimed ? 'claimed' : ''}">
       <div class="sp-reward-value">${parts.join(' ')}</div>
@@ -775,6 +798,8 @@ function ladderArenaRowHtml(arena, index) {
   if (arena.reward.coins) rewardParts.push(`🪙${arena.reward.coins}`);
   if (arena.reward.gems) rewardParts.push(`💎${arena.reward.gems}`);
   if (arena.reward.dust) rewardParts.push(`✨${arena.reward.dust}`);
+  if (arena.reward.draftEntries) rewardParts.push(`🎴${arena.reward.draftEntries}`);
+  if (arena.reward.tournamentEntries) rewardParts.push(`🏆${arena.reward.tournamentEntries}`);
   return `
     <div class="ladder-arena-row ${reached ? 'reached' : 'locked'} ${isCurrent ? 'current' : ''}">
       <div class="ladder-arena-icon">${arena.icon}</div>
@@ -1599,16 +1624,40 @@ function renderShop() {
     </div>`;
   })();
 
+  const draftBundleOfferHtml = save.draftBundleClaimed
+    ? ''
+    : `
+    <div class="welcome-offer">
+      <div class="welcome-offer-badge">¡Oferta única!</div>
+      <h3>${Draft.DRAFT_BUNDLE_SKU.label}</h3>
+      <div class="welcome-offer-rewards">🎴 x${Draft.DRAFT_BUNDLE_SKU.entries}</div>
+      <button class="btn primary" id="buy-draft-bundle">Comprar por ${Draft.DRAFT_BUNDLE_SKU.priceLabel}</button>
+    </div>`;
+
+  const tournamentBundleOfferHtml = save.tournamentBundleClaimed
+    ? ''
+    : `
+    <div class="welcome-offer">
+      <div class="welcome-offer-badge">¡Oferta única!</div>
+      <h3>${Tournament.TOURNAMENT_BUNDLE_SKU.label}</h3>
+      <div class="welcome-offer-rewards">🏆 x${Tournament.TOURNAMENT_BUNDLE_SKU.entries}</div>
+      <button class="btn primary" id="buy-tournament-bundle">Comprar por ${Tournament.TOURNAMENT_BUNDLE_SKU.priceLabel}</button>
+    </div>`;
+
   const dailyDeals = DailyDeals.ensureDailyDeals(save).deals;
   const dailyDealsHtml = dailyDeals
     .map((deal) => {
-      const card = getCard(deal.cardId);
-      const purchased = DailyDeals.isDealPurchased(save, deal.cardId);
+      const purchased = DailyDeals.isDealPurchased(save, deal.id);
       const priceIcon = deal.currency === 'coins' ? '🪙' : '💎';
+      const visual = deal.entryType
+        ? `<div class="daily-deal-entry-visual">${deal.entryType === 'draft' ? '🎴' : '🏆'}<span>${
+            deal.entryType === 'draft' ? Draft.DRAFT_ENTRY_SKU.label : Tournament.TOURNAMENT_ENTRY_SKU.label
+          }</span></div>`
+        : cardVisual(getCard(deal.cardId));
       return `
       <div class="daily-deal-slot">
-        ${cardVisual(card)}
-        <button class="btn ${purchased ? '' : 'primary'} small daily-deal-btn" data-daily-deal="${deal.cardId}" ${purchased ? 'disabled' : ''}>
+        ${visual}
+        <button class="btn ${purchased ? '' : 'primary'} small daily-deal-btn" data-daily-deal="${deal.id}" ${purchased ? 'disabled' : ''}>
           ${purchased ? 'Comprado ✓' : `${priceIcon} ${deal.amount}`}
         </button>
       </div>`;
@@ -1622,6 +1671,19 @@ function renderShop() {
 
       ${welcomeOfferHtml}
       ${arenaOfferHtml}
+      ${draftBundleOfferHtml}
+      ${tournamentBundleOfferHtml}
+
+      <h3>Entradas</h3>
+      <p class="hint">Se consumen al entrar a la fila de Draft o Torneo, y se devuelven si cancelás antes de que empiece la partida.</p>
+      <div class="sku-grid">
+        <button class="btn sku" id="buy-draft-entry">
+          <span>🎴 ${Draft.DRAFT_ENTRY_SKU.label}</span><span class="price">${Draft.DRAFT_ENTRY_SKU.priceLabel}</span>
+        </button>
+        <button class="btn sku" id="buy-tournament-entry">
+          <span>🏆 ${Tournament.TOURNAMENT_ENTRY_SKU.label}</span><span class="price">${Tournament.TOURNAMENT_ENTRY_SKU.priceLabel}</span>
+        </button>
+      </div>
 
       <h3>🗓️ Tienda del Día</h3>
       <p class="hint">Tres cartas al azar: común, rara y una premium (normalmente épica, rara vez legendaria). Se renuevan mañana.</p>
@@ -1672,6 +1734,12 @@ function renderShop() {
   if (welcomeBtn) welcomeBtn.onclick = () => buyWelcomeOffer();
   const arenaOfferBtn = document.getElementById('buy-arena-offer');
   if (arenaOfferBtn) arenaOfferBtn.onclick = () => buyArenaOffer(arenaOfferBtn.dataset.arena);
+  const draftBundleBtn = document.getElementById('buy-draft-bundle');
+  if (draftBundleBtn) draftBundleBtn.onclick = () => buyDraftBundle();
+  const tournamentBundleBtn = document.getElementById('buy-tournament-bundle');
+  if (tournamentBundleBtn) tournamentBundleBtn.onclick = () => buyTournamentBundle();
+  document.getElementById('buy-draft-entry').onclick = () => buyDraftEntrySku();
+  document.getElementById('buy-tournament-entry').onclick = () => buyTournamentEntrySku();
   app.querySelectorAll('[data-sku]').forEach((btn) => {
     btn.onclick = () => mockPurchase(btn.dataset.sku);
   });
@@ -1689,8 +1757,8 @@ function renderShop() {
   });
 }
 
-function buyDailyDeal(cardId) {
-  const result = DailyDeals.buyDeal(save, cardId);
+function buyDailyDeal(dealId) {
+  const result = DailyDeals.buyDeal(save, dealId);
   if (!result.ok) {
     if (result.reason === 'balance') showToast('Saldo insuficiente para esta carta.');
     return;
@@ -1732,6 +1800,38 @@ function buyArenaOffer(arenaId) {
   save.coins += offer.coins;
   save.gems += offer.gems;
   save.claimedArenaOffers.push(arenaId);
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function buyDraftEntrySku() {
+  save.draftEntries = (save.draftEntries || 0) + 1;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function buyTournamentEntrySku() {
+  save.tournamentEntries = (save.tournamentEntries || 0) + 1;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function buyDraftBundle() {
+  if (save.draftBundleClaimed) return;
+  save.draftEntries = (save.draftEntries || 0) + Draft.DRAFT_BUNDLE_SKU.entries;
+  save.draftBundleClaimed = true;
+  persist();
+  sfx.coin();
+  renderShop();
+}
+
+function buyTournamentBundle() {
+  if (save.tournamentBundleClaimed) return;
+  save.tournamentEntries = (save.tournamentEntries || 0) + Tournament.TOURNAMENT_BUNDLE_SKU.entries;
+  save.tournamentBundleClaimed = true;
   persist();
   sfx.coin();
   renderShop();
@@ -1894,25 +1994,6 @@ function renderReveal() {
 // server/draftPods.js for why). This section only covers the draft-specific
 // screens (entry, queue, picking, hero pick) and the prize reveal.
 
-function renderDraftEntry() {
-  app.innerHTML = `
-    ${header()}
-    <div class="screen">
-      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>🎴 Draft</h2></div>
-      <p class="hint">
-        Abrís 3 sobres de 5 cartas cada uno, elegís una y pasás el resto — al estilo draft. Al terminar te llevás una carta extra del Gremio Errante de regalo (16 en total) y jugás un mini torneo de 4 contra los otros jugadores del draft.
-        El 1° puesto se lleva un Sobre Premium + un Sobre de Bronce, el 2° un Sobre de Bronce, y el 3° y 4° una carta común de regalo por participar.
-      </p>
-      <div class="welcome-offer">
-        <div class="welcome-offer-badge">Entrada</div>
-        <h3>${Draft.DRAFT_ENTRY_SKU.label}</h3>
-        <button class="btn primary" id="draft-pay">Pagar ${Draft.DRAFT_ENTRY_SKU.priceLabel} y entrar</button>
-      </div>
-    </div>`;
-  document.getElementById('back').onclick = () => go('home');
-  document.getElementById('draft-pay').onclick = () => startDraftEntry();
-}
-
 async function startDraftEntry() {
   draftQueueStatus = null;
   draftPack = null;
@@ -1923,6 +2004,8 @@ async function startDraftEntry() {
   try {
     await Net.connect();
   } catch {
+    save.draftEntries = (save.draftEntries || 0) + 1;
+    persist();
     showToast('No se pudo conectar con el servidor de Draft.');
     go('home');
     return;
@@ -1941,6 +2024,8 @@ function renderDraftWaiting() {
     </div>`;
   document.getElementById('cancel-draft').onclick = () => {
     Net.cancelDraftQueue();
+    save.draftEntries = (save.draftEntries || 0) + 1;
+    persist();
     go('home');
   };
 }
@@ -2049,28 +2134,11 @@ function bracketPrizeReveal(prize) {
 // startDirectMatch rooms.js uses for every other online match, so
 // renderBattle is entirely unmodified here too.
 
-function renderTournamentEntry() {
-  app.innerHTML = `
-    ${header()}
-    <div class="screen">
-      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>🏆 Torneo</h2></div>
-      <p class="hint">
-        Jugás con tu mazo Normal ya armado (el mismo de "Mis Mazos") contra otros 3 jugadores — dos semifinales y una final.
-        El 1° puesto se lleva un Sobre Premium + un Sobre de Bronce, el 2° un Sobre de Bronce, y el 3° y 4° una carta común de regalo por participar.
-      </p>
-      <div class="welcome-offer">
-        <div class="welcome-offer-badge">Entrada</div>
-        <h3>${Tournament.TOURNAMENT_ENTRY_SKU.label}</h3>
-        <button class="btn primary" id="tournament-pay">Pagar ${Tournament.TOURNAMENT_ENTRY_SKU.priceLabel} y entrar</button>
-      </div>
-    </div>`;
-  document.getElementById('back').onclick = () => go('home');
-  document.getElementById('tournament-pay').onclick = () => startTournamentEntry();
-}
-
 async function startTournamentEntry() {
   const faction = resolvePlayFaction(false);
   if (!faction) {
+    save.tournamentEntries = (save.tournamentEntries || 0) + 1;
+    persist();
     showToast('Elegí un mazo completo en "Mis Mazos" antes de entrar a un torneo.');
     go('deckSelect');
     return;
@@ -2081,6 +2149,8 @@ async function startTournamentEntry() {
   try {
     await Net.connect();
   } catch {
+    save.tournamentEntries = (save.tournamentEntries || 0) + 1;
+    persist();
     showToast('No se pudo conectar con el servidor de Torneos.');
     go('home');
     return;
@@ -2099,6 +2169,8 @@ function renderTournamentWaiting() {
     </div>`;
   document.getElementById('cancel-tournament').onclick = () => {
     Net.cancelTournamentQueue();
+    save.tournamentEntries = (save.tournamentEntries || 0) + 1;
+    persist();
     go('home');
   };
 }
@@ -3591,11 +3663,9 @@ export function render() {
   else if (screen === 'packOpen') renderPackOpen();
   else if (screen === 'reveal') renderReveal();
   else if (screen === 'onlineWaiting') renderOnlineWaiting();
-  else if (screen === 'draftEntry') renderDraftEntry();
   else if (screen === 'draftWaiting') renderDraftWaiting();
   else if (screen === 'draftPick') renderDraftPick();
   else if (screen === 'draftHeroPick') renderDraftHeroPick();
-  else if (screen === 'tournamentEntry') renderTournamentEntry();
   else if (screen === 'tournamentWaiting') renderTournamentWaiting();
   else if (screen === 'battle') renderBattle();
   wireTooltips();

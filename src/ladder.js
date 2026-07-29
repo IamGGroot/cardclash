@@ -19,7 +19,16 @@ export const ARENAS = [
   { id: 'corona', name: 'Corona Eterna', threshold: 5200, icon: '👑' },
 ].map((a, i) => ({
   ...a,
-  reward: { coins: 50 + i * 40, gems: i % 2 ? 15 + i * 5 : 0, dust: i % 3 === 2 ? 30 + i * 15 : 0 },
+  reward: {
+    coins: 50 + i * 40,
+    gems: i % 2 ? 15 + i * 5 : 0,
+    dust: i % 3 === 2 ? 30 + i * 15 : 0,
+    // Not every arena — only a handful of milestones past the early game
+    // throw in a Draft/Torneo entry, escalating toward the top arena.
+    ...(i === 3 || i === 7 ? { draftEntries: 1 } : {}),
+    ...(i === 5 ? { tournamentEntries: 1 } : {}),
+    ...(i === 8 ? { draftEntries: 1, tournamentEntries: 1 } : {}),
+  },
 }));
 
 export function getArenaIndex(trophies) {
@@ -79,6 +88,8 @@ export function claimTierReward(save, arenaId) {
   save.coins += arena.reward.coins || 0;
   save.gems += arena.reward.gems || 0;
   save.dust = (save.dust || 0) + (arena.reward.dust || 0);
+  save.draftEntries = (save.draftEntries || 0) + (arena.reward.draftEntries || 0);
+  save.tournamentEntries = (save.tournamentEntries || 0) + (arena.reward.tournamentEntries || 0);
   save.ladder.claimedTiers.push(arenaId);
   return { ok: true, reward: arena.reward };
 }

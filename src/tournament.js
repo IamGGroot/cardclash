@@ -5,3 +5,4 @@
 export { POD_SIZE, seedBracket, drawRandomCommonCard } from './bracket.js';
 
 export const TOURNAMENT_ENTRY_SKU = { id: 'tournament_entry', label: 'Entrada a Torneo', priceLabel: '$3.99' };
+export const TOURNAMENT_BUNDLE_SKU = { id: 'tournament_bundle_5', label: '5 Entradas a Torneo', entries: 5, priceLabel: '$12.00' };

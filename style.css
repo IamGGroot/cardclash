@@ -122,6 +122,16 @@ html, body {
   padding: 10px 14px;
   background: var(--bg-alt);
   border-bottom: 1px solid #2a3358;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.topbar::-webkit-scrollbar {
+  display: none;
+}
+
+.topbar > * {
+  flex-shrink: 0;
 }
 
 .profile-chip {
@@ -1806,6 +1816,27 @@ html, body {
 .daily-deal-slot .ability-text {
   flex: 1;
   min-height: 0;
+}
+
+.daily-deal-entry-visual {
+  height: 170px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 2.6rem;
+  border-radius: var(--radius, 12px);
+  background: color-mix(in srgb, var(--gold, #d4af37) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--gold, #d4af37) 40%, transparent);
+  text-align: center;
+  padding: 8px;
+}
+
+.daily-deal-entry-visual span {
+  font-size: 0.75rem;
+  font-weight: 600;
+  opacity: 0.85;
 }
 
 .daily-deal-btn {
