@@ -221,6 +221,20 @@ html, body {
     linear-gradient(180deg, var(--wood-mid) 0%, var(--wood-dark) 55%, #0c0806 100%);
 }
 
+/* Home only: a dim, blurred card-art backdrop behind the wood gradient
+   above — reuses one of the already-licensed card-art images (see
+   art/CREDITS.md, Pixabay Content License) instead of pulling in a new
+   external asset. Provisional placeholder; swap the file freely later. */
+.home-screen {
+  background:
+    radial-gradient(ellipse 120% 45% at 50% 0%, rgba(255, 200, 130, 0.09), transparent 60%),
+    linear-gradient(180deg, rgba(43, 32, 24, 0.86) 0%, rgba(27, 20, 15, 0.92) 55%, rgba(12, 8, 6, 0.97) 100%),
+    url('art/wall.jpg');
+  background-size: auto, auto, cover;
+  background-position: center, center, center 35%;
+  background-repeat: no-repeat;
+}
+
 .home-screen::before,
 .tutorial-screen::before {
   content: "";
@@ -663,6 +677,21 @@ html, body {
   color: var(--gold-light);
 }
 
+.missions-tab-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 54;
+  background: rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.missions-tab-scrim.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .missions-tab-wrap {
   position: fixed;
   top: 50%;
@@ -751,6 +780,22 @@ html, body {
   align-items: flex-end;
   gap: 4px;
   flex-shrink: 0;
+}
+
+.missions-widget-close {
+  appearance: none;
+  cursor: pointer;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .missions-widget-timer {

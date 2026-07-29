@@ -483,6 +483,7 @@ function renderHome() {
       : `Ya viste el máximo de ${AD_DAILY_LIMIT} anuncios de hoy — volvé mañana`
   }">📺</button>
 
+    <div class="missions-tab-scrim ${missionsTabExpanded ? 'visible' : ''}" id="missions-tab-scrim"></div>
     <div class="missions-tab-wrap ${missionsTabExpanded ? 'expanded' : ''}" id="missions-tab-wrap">
       <aside class="missions-widget missions-tab-panel">
         <div class="missions-widget-header">
@@ -490,6 +491,7 @@ function renderHome() {
           <div class="missions-widget-header-right">
             <span id="missions-reset-timer" class="missions-widget-timer"></span>
             ${dailyClaimable ? `<span class="missions-widget-badge">${dailyClaimable} para reclamar</span>` : ''}
+            <button class="missions-widget-close" id="missions-widget-close" data-tooltip="Cerrar">✕</button>
           </div>
         </div>
         ${widgetMissions.map((m) => missionRowHtml(m, true)).join('')}
@@ -567,10 +569,22 @@ function renderHome() {
   }
   document.getElementById('btn-pass-banner').onclick = () => go('seasonPass');
   document.getElementById('missions-widget-more').onclick = () => go('missions');
-  document.getElementById('missions-tab-handle').onclick = () => {
-    missionsTabExpanded = !missionsTabExpanded;
-    renderHome();
+  // Toggling the tab just flips a CSS class on the existing elements instead
+  // of going through renderHome() (a full app.innerHTML replace) — the whole
+  // home screen was re-mounting on every open/close before, which replayed
+  // every entrance animation (this tab's, the ad FAB's) and looked like the
+  // screen was refreshing.
+  const setMissionsTabExpanded = (expanded) => {
+    missionsTabExpanded = expanded;
+    document.getElementById('missions-tab-wrap').classList.toggle('expanded', expanded);
+    document.getElementById('missions-tab-scrim').classList.toggle('visible', expanded);
   };
+  document.getElementById('missions-tab-handle').onclick = () => setMissionsTabExpanded(!missionsTabExpanded);
+  document.getElementById('missions-widget-close').onclick = (e) => {
+    e.stopPropagation();
+    setMissionsTabExpanded(false);
+  };
+  document.getElementById('missions-tab-scrim').onclick = () => setMissionsTabExpanded(false);
   wireMissionClaimButtons(renderHome);
   startDailyResetTimer('missions-reset-timer', renderHome);
 }
