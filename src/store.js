@@ -222,4 +222,25 @@ export function buildAiDeck(faction) {
   return deck;
 }
 
+// Replaces the deck entirely with a random legal build from cards the
+// player actually owns (faction + neutral pool, same mix the deckbuilder
+// already allows) — unlike buildAiDeck, which assumes an unlimited card
+// pool, this respects owned copy counts, so a thin collection just yields
+// a smaller-than-16 deck rather than pulling cards out of nowhere.
+export function autoBuildDeck(state, faction, deckKey = 'decks') {
+  const pool = shuffle([...cardsForFaction(faction), ...cardsForFaction('neutral')]);
+  const deck = {};
+  let total = 0;
+  for (const card of pool) {
+    if (total >= DECK_SIZE) break;
+    const owned = state.collection[card.id] || 0;
+    if (owned <= 0) continue;
+    const take = Math.min(owned, MAX_COPIES, DECK_SIZE - total);
+    deck[card.id] = take;
+    total += take;
+  }
+  state[deckKey][faction] = deck;
+  return deck;
+}
+
 export const CONSTANTS = { MAX_COPIES, DECK_SIZE, DUST_VALUE, CRAFT_COST };

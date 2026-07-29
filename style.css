@@ -2120,6 +2120,17 @@ html, body {
   cursor: default;
 }
 
+.auto-build-btn {
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff3d6;
+  background: linear-gradient(180deg, #6b4a1e, #402c12);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+}
+
 .deck-progress {
   margin-bottom: 16px;
 }
@@ -3297,11 +3308,12 @@ html, body {
   max-height: 190px;
   min-height: 0;
   transition: transform 0.15s;
-  /* pan-x (not none) hands horizontal swipes to the browser's native
-     scroll so a hand too wide to fit can be swiped through — vertical
-     drags (playing a card) are still routed to wireHandCardDrag below,
-     since pan-x doesn't claim that axis. */
-  touch-action: pan-x;
+  /* none, not pan-x: wireHandCardDrag (src/ui.js) resolves horizontal vs.
+     vertical itself and scrolls .hand manually — touch-action: pan-x
+     handed the gesture to the browser instead, which on some browsers
+     never even fires the pointer events wireHandCardDrag needs to notice
+     a scroll started (the reported "drag doesn't work" bug). */
+  touch-action: none;
 }
 
 .hand-card .card {

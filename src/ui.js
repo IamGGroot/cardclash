@@ -1398,9 +1398,16 @@ function renderDeckbuilder() {
         <div class="deck-progress-label">${count}/${Store.CONSTANTS.DECK_SIZE} cartas${complete ? ' · Mazo completo ✓' : ''}</div>
         <div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
       </div>
+      <button class="btn auto-build-btn" id="auto-build-deck" data-tooltip="Reemplaza este mazo por uno al azar con cartas que ya tenés">🎲 Autoconstruir mazo</button>
       ${sections}
     </div>`;
   document.getElementById('back').onclick = () => go('deckSelect');
+  document.getElementById('auto-build-deck').onclick = () => {
+    Store.autoBuildDeck(save, faction, deckKey);
+    persist();
+    sfx.click();
+    renderDeckbuilder();
+  };
   app.querySelectorAll('[data-action="add"]').forEach((btn) => {
     btn.onclick = () => {
       Store.addToDeck(save, faction, btn.dataset.id, deckKey);
@@ -2714,33 +2721,60 @@ function onHandCardClick(idx) {
 
 const DRAG_THRESHOLD = 10;
 
+// A drag starting on a hand card is ambiguous until it moves: mostly
+// vertical means "play this card" (the original gesture), mostly
+// horizontal means "scroll the hand" (so a wide hand can be swiped through
+// without needing to land precisely on the thin scrollbar). The direction
+// is decided once, the first time the movement clears DRAG_THRESHOLD, and
+// the card stays put with .hand-card { touch-action: none } so the browser
+// never takes the gesture over mid-drag and leaves this handler hanging.
 function wireHandCardDrag(el, idx) {
   el.addEventListener('pointerdown', (e) => {
-    if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget || p1AutoPlay) return;
     const cardId = battle.p1.hand[idx];
     const card = getCard(cardId);
-    if (card.type !== 'creature') return;
-    if (card.cost > battle.p1.resource || battle.p1.might < card.requirement) return;
+    const canPlay =
+      battle.active === 'p1' &&
+      !battle.winner &&
+      !pendingPlacement &&
+      !pendingTarget &&
+      !p1AutoPlay &&
+      card.type === 'creature' &&
+      card.cost <= battle.p1.resource &&
+      battle.p1.might >= card.requirement;
 
+    const handEl = el.closest('.hand');
     const startX = e.clientX;
     const startY = e.clientY;
-    let dragging = false;
+    let lastX = e.clientX;
+    let mode = null; // null (undecided) | 'scroll' | 'play' | 'none'
     let ghost = null;
     let hoverSlot = null;
 
     const onMove = (ev) => {
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
-      if (!dragging) {
+      if (!mode) {
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
-        dragging = true;
-        pendingPlacement = { idx, card };
-        render();
-        ghost = document.createElement('div');
-        ghost.className = 'drag-ghost';
-        ghost.innerHTML = cardArtSVG(card);
-        document.body.appendChild(ghost);
+        if (Math.abs(dx) > Math.abs(dy)) {
+          mode = 'scroll';
+        } else if (canPlay) {
+          mode = 'play';
+          pendingPlacement = { idx, card };
+          render();
+          ghost = document.createElement('div');
+          ghost.className = 'drag-ghost';
+          ghost.innerHTML = cardArtSVG(card);
+          document.body.appendChild(ghost);
+        } else {
+          mode = 'none';
+        }
       }
+      if (mode === 'scroll') {
+        if (handEl) handEl.scrollLeft -= ev.clientX - lastX;
+        lastX = ev.clientX;
+        return;
+      }
+      if (mode !== 'play') return;
       ghost.style.left = `${ev.clientX}px`;
       ghost.style.top = `${ev.clientY}px`;
       const under = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -2750,11 +2784,19 @@ function wireHandCardDrag(el, idx) {
       hoverSlot = slot;
     };
 
-    const onUp = () => {
+    const cleanup = () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onCancel);
-      if (!dragging) return;
+    };
+
+    const onUp = () => {
+      cleanup();
+      if (mode === 'scroll') {
+        suppressClick = true;
+        return;
+      }
+      if (mode !== 'play') return;
       if (ghost) ghost.remove();
       if (hoverSlot) {
         hoverSlot.classList.remove('drag-hover');
@@ -2772,17 +2814,11 @@ function wireHandCardDrag(el, idx) {
       render();
     };
 
-    // Fires instead of pointerup when the browser decides mid-gesture that
-    // this is actually a horizontal hand-scroll (touch-action: pan-x) and
-    // takes the pointer over — without this, a scroll started on a card
-    // would leave pendingPlacement/the ghost stuck since onUp never runs.
     const onCancel = () => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      document.removeEventListener('pointercancel', onCancel);
+      cleanup();
       if (ghost) ghost.remove();
       if (hoverSlot) hoverSlot.classList.remove('drag-hover');
-      if (dragging) pendingPlacement = null;
+      if (mode === 'play') pendingPlacement = null;
       render();
     };
 
