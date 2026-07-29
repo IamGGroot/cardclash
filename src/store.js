@@ -1,4 +1,4 @@
-import { CARDS, cardsForFaction, getCard, FACTIONS } from './cards.js';
+import { CARDS, cardsForFaction, getCard } from './cards.js';
 
 const SAVE_KEY = 'cardclash_save_v2';
 const MAX_COPIES = 2;
@@ -47,33 +47,33 @@ function autoDeckFrom(collection, faction) {
 // grantStarterDeck() below, right after the player chooses. This keeps
 // "installing the app" and "choosing your faction" as two separate,
 // inspectable steps instead of baking a choice into freshSave() itself.
+//
+// `deck`/`autoDeck` are each a single freeform { cardId: count } map — deck
+// building isn't mono-faction anymore (any owned card can go in either
+// deck), so there's exactly one Normal deck and one Autodeckbuilder deck
+// per player, not one of each per faction.
 function freshSave() {
-  const collection = emptyCollection();
-  const decks = {};
-  const autoDecks = {};
-  for (const faction of Object.keys(FACTIONS)) {
-    decks[faction] = {};
-    autoDecks[faction] = {};
-  }
   return {
     coins: 300,
     gems: 50,
     dust: 0,
-    collection,
-    decks,
-    autoDecks,
+    collection: emptyCollection(),
+    deck: {},
+    autoDeck: {},
   };
 }
 
 // Grants the 8 unique starter cards (2 copies each = DECK_SIZE) for one
-// chosen faction and immediately builds that faction's deck from them —
-// called once, right after the player picks their starting faction.
+// chosen faction and immediately builds the starting deck from them —
+// called once, right after the player picks their starting faction. The
+// deck is freeform from here on; this just seeds it single-faction since
+// that's all the player owns yet.
 export function grantStarterDeck(state, faction) {
   for (const id of STARTER_CARD_IDS) {
     if (getCard(id).faction !== faction) continue;
     state.collection[id] = MAX_COPIES;
   }
-  state.decks[faction] = autoDeckFrom(state.collection, faction);
+  state.deck = autoDeckFrom(state.collection, faction);
 }
 
 export function load() {
@@ -81,7 +81,7 @@ export function load() {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return freshSave();
     const parsed = JSON.parse(raw);
-    if (!parsed.collection || !parsed.decks) return freshSave();
+    if (!parsed.collection) return freshSave();
     if (typeof parsed.dust !== 'number') parsed.dust = 0;
     // Backfill cards/factions added since this save was created, so they
     // show up (locked, same as any other unpulled card) instead of being
@@ -89,11 +89,19 @@ export function load() {
     for (const card of CARDS) {
       if (!(card.id in parsed.collection)) parsed.collection[card.id] = 0;
     }
-    if (!parsed.autoDecks) parsed.autoDecks = {};
-    for (const faction of Object.keys(FACTIONS)) {
-      if (!parsed.decks[faction]) parsed.decks[faction] = {};
-      if (!parsed.autoDecks[faction]) parsed.autoDecks[faction] = {};
+    // Migrate the old one-deck-per-faction save shape (save.decks[faction])
+    // into the new single freeform deck — keep whichever faction deck was
+    // actually selected to play, falling back to the first non-empty one.
+    if (!parsed.deck) {
+      const legacy = parsed.decks || {};
+      parsed.deck = { ...(legacy[parsed.selectedFaction] || Object.values(legacy).find((d) => Object.keys(d).length) || {}) };
     }
+    if (!parsed.autoDeck) {
+      const legacy = parsed.autoDecks || {};
+      parsed.autoDeck = { ...(legacy[parsed.selectedAutoFaction] || Object.values(legacy).find((d) => Object.keys(d).length) || {}) };
+    }
+    delete parsed.decks;
+    delete parsed.autoDecks;
     return parsed;
   } catch {
     return freshSave();
@@ -117,34 +125,48 @@ export function addCardsToCollection(state, cards) {
   }
 }
 
-// deckKey selects which deck set to read/write — 'decks' (default, the
-// normal manually-played deck) or 'autoDecks' (the Autodeckbuilder deck,
-// same collection, same 16-card/MAX_COPIES rules, just a separate build).
-export function deckCount(state, faction, deckKey = 'decks') {
-  return Object.values(state[deckKey][faction] || {}).reduce((a, b) => a + b, 0);
+// deckKey selects which deck to read/write — 'deck' (default, the normal
+// manually-played deck) or 'autoDeck' (the Autodeckbuilder deck, same
+// collection, same 16-card/MAX_COPIES rules, just a separate build). Either
+// deck can freely mix cards from any faction plus neutral.
+export function deckCount(state, deckKey = 'deck') {
+  return Object.values(state[deckKey] || {}).reduce((a, b) => a + b, 0);
 }
 
-export function canAddToDeck(state, faction, cardId, deckKey = 'decks') {
-  const deck = state[deckKey][faction];
+export function canAddToDeck(state, cardId, deckKey = 'deck') {
+  const deck = state[deckKey];
   const inDeck = deck[cardId] || 0;
   const owned = state.collection[cardId] || 0;
-  return inDeck < owned && inDeck < MAX_COPIES && deckCount(state, faction, deckKey) < DECK_SIZE;
+  return inDeck < owned && inDeck < MAX_COPIES && deckCount(state, deckKey) < DECK_SIZE;
 }
 
-export function addToDeck(state, faction, cardId, deckKey = 'decks') {
-  if (!canAddToDeck(state, faction, cardId, deckKey)) return false;
-  const deck = state[deckKey][faction];
+export function addToDeck(state, cardId, deckKey = 'deck') {
+  if (!canAddToDeck(state, cardId, deckKey)) return false;
+  const deck = state[deckKey];
   deck[cardId] = (deck[cardId] || 0) + 1;
   return true;
 }
 
-export function removeFromDeck(state, faction, cardId, deckKey = 'decks') {
-  const deck = state[deckKey][faction];
+export function removeFromDeck(state, cardId, deckKey = 'deck') {
+  const deck = state[deckKey];
   const inDeck = deck[cardId] || 0;
   if (inDeck <= 0) return false;
   deck[cardId] = inDeck - 1;
   if (deck[cardId] === 0) delete deck[cardId];
   return true;
+}
+
+// Every faction (+neutral) present in a deck, with how many cards of each —
+// used to remind players in the deckbuilder which factions are close to the
+// 4-creature perk threshold (see src/factionPerks.js).
+export function deckFactionBreakdown(deck) {
+  const counts = {};
+  for (const [cardId, count] of Object.entries(deck)) {
+    const card = getCard(cardId);
+    if (!card) continue;
+    counts[card.faction] = (counts[card.faction] || 0) + count;
+  }
+  return counts;
 }
 
 export function disenchant(state, cardId) {
@@ -154,15 +176,13 @@ export function disenchant(state, cardId) {
   const value = DUST_VALUE[card.rarity] || 0;
   state.collection[cardId] = owned - 1;
   state.dust = (state.dust || 0) + value;
-  // Keep any deck (both deck sets) that referenced this card in sync with
-  // the new copy count.
-  for (const deckKey of ['decks', 'autoDecks']) {
-    for (const faction of Object.keys(state[deckKey] || {})) {
-      const deck = state[deckKey][faction];
-      if ((deck[cardId] || 0) > state.collection[cardId]) {
-        deck[cardId] = state.collection[cardId];
-        if (deck[cardId] === 0) delete deck[cardId];
-      }
+  // Keep both decks that referenced this card in sync with the new copy
+  // count.
+  for (const deckKey of ['deck', 'autoDeck']) {
+    const deck = state[deckKey];
+    if (deck && (deck[cardId] || 0) > state.collection[cardId]) {
+      deck[cardId] = state.collection[cardId];
+      if (deck[cardId] === 0) delete deck[cardId];
     }
   }
   return { ok: true, dustGained: value };
@@ -207,10 +227,12 @@ function shuffle(arr) {
 }
 
 // Same 16-card cap the player is held to, so matches stay fair — a random
-// 8 unique cards (2 copies each) from the faction + neutral pool each time,
-// so the AI's deck (and which cards it shows off) varies match to match.
-export function buildAiDeck(faction) {
-  const pool = shuffle([...cardsForFaction(faction), ...cardsForFaction('neutral')]);
+// 8 unique cards (2 copies each) from the WHOLE card pool each time
+// (unrestricted by faction, matching the fact that a real player's deck can
+// freely mix factions now too). Used only for the matchmaking bot fallback
+// (src/net.js quick-match) impersonating a real opponent.
+export function buildAiDeck() {
+  const pool = shuffle(CARDS);
   const deck = {};
   let total = 0;
   for (const card of pool) {
@@ -223,12 +245,12 @@ export function buildAiDeck(faction) {
 }
 
 // Replaces the deck entirely with a random legal build from cards the
-// player actually owns (faction + neutral pool, same mix the deckbuilder
-// already allows) — unlike buildAiDeck, which assumes an unlimited card
-// pool, this respects owned copy counts, so a thin collection just yields
-// a smaller-than-16 deck rather than pulling cards out of nowhere.
-export function autoBuildDeck(state, faction, deckKey = 'decks') {
-  const pool = shuffle([...cardsForFaction(faction), ...cardsForFaction('neutral')]);
+// player actually owns, any faction mix — unlike buildAiDeck, which assumes
+// an unlimited card pool, this respects owned copy counts, so a thin
+// collection just yields a smaller-than-16 deck rather than pulling cards
+// out of nowhere.
+export function autoBuildDeck(state, deckKey = 'deck') {
+  const pool = shuffle(CARDS);
   const deck = {};
   let total = 0;
   for (const card of pool) {
@@ -239,7 +261,7 @@ export function autoBuildDeck(state, faction, deckKey = 'decks') {
     deck[card.id] = take;
     total += take;
   }
-  state[deckKey][faction] = deck;
+  state[deckKey] = deck;
   return deck;
 }
 

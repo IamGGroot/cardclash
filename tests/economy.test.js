@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { PACKS, DUST_SKUS, GEM_SKUS, COIN_SKUS, openPack } from '../src/economy.js';
+import { PACKS, DUST_SKUS, GEM_SKUS, COIN_SKUS, openPack, AD_REWARD, AD_DAILY_LIMIT, canWatchAd, recordAdWatch, adsWatchedToday } from '../src/economy.js';
 import { FACTIONS } from '../src/cards.js';
 
 describe('faction-themed packs', () => {
@@ -60,5 +60,31 @@ describe('dust purchases', () => {
     for (const sku of [...GEM_SKUS, ...COIN_SKUS, ...DUST_SKUS]) {
       assert.ok(sku.priceLabel && sku.priceLabel.startsWith('$'));
     }
+  });
+});
+
+describe('daily ad-watch cap', () => {
+  function freshSave() {
+    return { coins: 0 };
+  }
+
+  test('AD_REWARD pays 10 coins', () => {
+    assert.equal(AD_REWARD.coins, 10);
+  });
+
+  test('can watch ads up to the daily limit, then is blocked', () => {
+    const save = freshSave();
+    for (let i = 0; i < AD_DAILY_LIMIT; i++) {
+      assert.equal(canWatchAd(save), true, `should allow ad #${i + 1}`);
+      recordAdWatch(save);
+    }
+    assert.equal(adsWatchedToday(save), AD_DAILY_LIMIT);
+    assert.equal(canWatchAd(save), false);
+  });
+
+  test('the count resets on a new day', () => {
+    const save = { ...freshSave(), adWatch: { date: '2000-01-01', count: AD_DAILY_LIMIT } };
+    assert.equal(canWatchAd(save), true);
+    assert.equal(adsWatchedToday(save), 0);
   });
 });

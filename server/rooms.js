@@ -50,8 +50,9 @@ function generateCode() {
   return code;
 }
 
-// A deck is a { cardId: count } map, same shape as save.decks[faction] on
-// the client. Reject anything a legitimate deckbuilder couldn't produce
+// A deck is a { cardId: count } map, same shape as save.deck on the client
+// (a single freeform deck, not split by faction). Reject anything a
+// legitimate deckbuilder couldn't produce
 // rather than trusting the client's arithmetic.
 export function validateDeck(deck, faction) {
   if (!deck || typeof deck !== 'object') return false;

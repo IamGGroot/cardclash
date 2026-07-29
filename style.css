@@ -643,6 +643,26 @@ html, body {
   50% { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 8px rgba(255, 176, 32, 0); }
 }
 
+.ad-watch-fab:disabled {
+  animation: none;
+  opacity: 0.35;
+  border-color: #2a3358;
+  background: var(--bg-alt);
+  cursor: default;
+}
+
+.btn.ad:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ad-countdown {
+  font-family: var(--font-display);
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: var(--gold-light);
+}
+
 .missions-tab-wrap {
   position: fixed;
   top: 50%;
@@ -1668,16 +1688,14 @@ html, body {
   min-width: 0;
 }
 
-@media (min-width: 460px) {
+/* Only bump to 4 columns below 600px — above that, #app itself is capped
+   to 480px (see the desktop media query further down), so the grid's real
+   available width stops growing with the viewport. The old 620px/780px
+   breakpoints assumed the container kept growing past that point too,
+   which packed 5-6 columns into a ~450px box on any wide desktop window,
+   squeezing every card down to a sliver. */
+@media (min-width: 460px) and (max-width: 599px) {
   .card-grid { grid-template-columns: repeat(4, 1fr); }
-}
-
-@media (min-width: 620px) {
-  .card-grid { grid-template-columns: repeat(5, 1fr); }
-}
-
-@media (min-width: 780px) {
-  .card-grid { grid-template-columns: repeat(6, 1fr); }
 }
 
 .collection-slot {
@@ -1959,12 +1977,6 @@ html, body {
   margin-bottom: 6px;
 }
 
-.faction-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
 .daily-deal-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2073,20 +2085,33 @@ html, body {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
 }
 
-.deck-row {
+/* Mis Mazos: since a deck is a single freeform card list now (not one per
+   faction — see store.js), this replaces the old per-faction deck-row list
+   with a compact hero picker: which special ability + attribute track
+   represents this deck in battle, independent of which factions its cards
+   actually come from. */
+.hero-chip-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 10px 0 16px;
+}
+
+.hero-chip {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 14px 10px 10px;
+  gap: 2px;
+  padding: 10px 6px;
   border-radius: 12px;
+  cursor: pointer;
   background: linear-gradient(180deg, #2b2018, #1b140f);
   border: 1.5px solid var(--theme-accent, rgba(212, 175, 55, 0.25));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 2px 6px rgba(0, 0, 0, 0.3);
   color: var(--text);
 }
 
-.deck-row.selected {
+.hero-chip.selected {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 2px 6px rgba(0, 0, 0, 0.3),
@@ -2094,99 +2119,20 @@ html, body {
     0 0 14px -4px rgba(212, 175, 55, 0.6);
 }
 
-/* A round radio-style toggle, separate from the row body below so tapping it
-   marks "this is the deck Jugar uses" without also opening the deckbuilder. */
-.deck-row-select {
-  appearance: none;
-  cursor: pointer;
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1.5px solid rgba(212, 175, 55, 0.4);
-  color: #1a1400;
-  font-size: 14px;
-  font-weight: 800;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.hero-chip-icon {
+  font-size: 20px;
 }
 
-.deck-row.selected .deck-row-select {
-  background: linear-gradient(180deg, var(--gold-light), var(--gold));
-  border-color: var(--gold-light);
-}
-
-.deck-row-select:active {
-  transform: scale(0.9);
-}
-
-.deck-row-select:disabled {
-  cursor: default;
-  opacity: 0.35;
-}
-
-.deck-row-body {
-  flex: 1;
-  min-width: 0;
-  cursor: pointer;
-  text-align: left;
-}
-
-.deck-row-top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.deck-row-names {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  text-align: left;
-}
-
-.deck-row-faction {
+.hero-chip-name {
   font-family: var(--font-display);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
-  color: var(--theme-accent, var(--gold-light));
+  text-align: center;
 }
 
-.deck-row-hero {
-  font-size: 11px;
+.hero-chip-faction {
+  font-size: 10px;
   color: var(--text-dim);
-}
-
-.deck-row-count {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
-.deck-row-count.complete {
-  color: #6fe0a0;
-}
-
-.deck-row-bar {
-  height: 6px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.35);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
-  overflow: hidden;
-}
-
-.deck-row-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #3d8bff, #6a4dff);
-  transition: width 0.2s ease;
-}
-
-.deck-row-fill.complete {
-  background: linear-gradient(90deg, #38e07a, #1fae5c);
 }
 
 .faction-section {
@@ -2224,6 +2170,13 @@ html, body {
 .faction-section-tagline {
   font-size: 11px;
   color: var(--text-dim);
+}
+
+.faction-section-perk {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--theme-accent);
+  white-space: nowrap;
 }
 
 .tutorial-list {
@@ -3177,11 +3130,23 @@ html, body {
   flex-shrink: 0;
 }
 
+/* One row per side — holds 1+ perk pills now that a player can have more
+   than one faction's aura active at once (mixed-faction decks). */
+.perk-indicator-row {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+}
+
 .perk-indicator {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 1px;
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.38));
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(212, 175, 55, 0.12);
@@ -3191,7 +3156,15 @@ html, body {
 }
 
 .perk-indicator-icon {
-  font-size: 16px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.perk-indicator-count {
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-dim);
 }
 
 .perk-indicator.active {

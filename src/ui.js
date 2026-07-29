@@ -1,6 +1,21 @@
 import { CARDS, getCard, getHero, HEROES, FACTIONS, cardsForFaction, RARITY_COLORS, RARITY_LABEL } from './cards.js';
 import * as Store from './store.js';
-import { PACKS, GEM_SKUS, COIN_SKUS, DUST_SKUS, WELCOME_OFFER, SEASON_PASS_SKU, getArenaOffer, openPack, matchReward, AD_REWARD } from './economy.js';
+import {
+  PACKS,
+  GEM_SKUS,
+  COIN_SKUS,
+  DUST_SKUS,
+  WELCOME_OFFER,
+  SEASON_PASS_SKU,
+  getArenaOffer,
+  openPack,
+  matchReward,
+  AD_REWARD,
+  AD_DAILY_LIMIT,
+  canWatchAd,
+  recordAdWatch,
+  adsWatchedToday,
+} from './economy.js';
 import {
   newGame,
   levelUpAttribute,
@@ -15,7 +30,7 @@ import {
 } from './battle.js';
 import { runAiTurnSteps } from './ai.js';
 import { runAutoDeckTurn } from './autoDeck.js';
-import { getFactionPerk, countFieldCreatures, effectiveAtk, effectiveRetaliate, effectiveLife, effectiveMaxLife } from './factionPerks.js';
+import { FACTION_PERKS, getActiveFactionPerks, countFieldCreaturesByFaction, effectiveAtk, effectiveRetaliate, effectiveLife, effectiveMaxLife } from './factionPerks.js';
 import { cardArtSVG, AVATARS } from './art.js';
 import * as Missions from './missions.js';
 import * as DailyDeals from './dailyDeals.js';
@@ -34,8 +49,7 @@ setSoundEnabled(save.soundEnabled !== false);
 setHapticsEnabled(save.vibrationEnabled !== false);
 let screen = 'home';
 let battle = null;
-let currentDeckFaction = null;
-let deckMode = 'normal'; // 'normal' | 'auto' — which deck set renderDeckSelect/renderDeckbuilder show
+let deckMode = 'normal'; // 'normal' | 'auto' — which deck (save.deck / save.autoDeck) renderDeckSelect/renderDeckbuilder show
 let lastPackReveal = null;
 let revealReturnScreen = 'shop'; // where renderReveal's "Continuar" button goes — draft reveals redirect elsewhere
 let pendingPackId = null; // paid-for pack waiting to be dragged open
@@ -422,29 +436,21 @@ function renderHome() {
       playMenuOpen
         ? `<div class="play-menu-backdrop" id="play-menu-backdrop"></div>
            <div class="play-menu">
-             <button class="play-menu-option" id="play-vs-ai">
+             <button class="play-menu-option online" id="play-online" data-tooltip="Emparejamiento online contra otros jugadores por trofeos cercanos. Si no hay nadie disponible, jugás contra un rival de respaldo.">
+               <span class="play-menu-icon">⚔️</span>
+               <span>Modo Normal</span>
+             </button>
+             <button class="play-menu-option auto online" id="play-auto-online" data-tooltip="Se juega solo, una carta por turno — mismo emparejamiento online que el Modo Normal.">
                <span class="play-menu-icon">🤖</span>
-               <span>Jugar vs IA</span>
-             </button>
-             <button class="play-menu-option online" id="play-online">
-               <span class="play-menu-icon">🌐</span>
-               <span>Jugar Online</span>
-             </button>
-             <button class="play-menu-option auto" id="play-auto-ai">
-               <span class="play-menu-icon">🤖✨</span>
-               <span>Autodeckbuilder vs IA</span>
-             </button>
-             <button class="play-menu-option auto online" id="play-auto-online">
-               <span class="play-menu-icon">🤖🌐</span>
-               <span>Autodeckbuilder Online</span>
+               <span>Autodeckbuilder</span>
              </button>
              <button class="play-menu-option draft" id="play-draft" data-tooltip="Abrís 3 sobres de 5 cartas y draftás pack-and-pass + una carta gratis del Gremio Errante, luego jugás un torneo de 4 contra tu pod. 1° Sobre Premium + Sobre de Bronce, 2° Sobre de Bronce, 3°/4° carta común.">
                <span class="play-menu-icon">🎴</span>
-               <span>Draft ${save.draftEntries ? `(${save.draftEntries} entrada${save.draftEntries === 1 ? '' : 's'})` : '— sin entradas'}</span>
+               <span>Draft${save.draftEntries ? ` (${save.draftEntries} entrada${save.draftEntries === 1 ? '' : 's'})` : ''}</span>
              </button>
              <button class="play-menu-option tournament" id="play-tournament" data-tooltip="Jugás con tu mazo Normal ya armado contra otros 3 jugadores — dos semifinales y una final. Mismos premios que el Draft.">
                <span class="play-menu-icon">🏆</span>
-               <span>Torneo ${save.tournamentEntries ? `(${save.tournamentEntries} entrada${save.tournamentEntries === 1 ? '' : 's'})` : '— sin entradas'}</span>
+               <span>Torneo${save.tournamentEntries ? ` (${save.tournamentEntries} entrada${save.tournamentEntries === 1 ? '' : 's'})` : ''}</span>
              </button>
            </div>`
         : ''
@@ -471,7 +477,11 @@ function renderHome() {
       </button>
     </div>
 
-    <button class="ad-watch-fab" id="home-watch-ad" data-tooltip="Mirar video para ganar ${AD_REWARD.coins} monedas">📺</button>
+    <button class="ad-watch-fab" id="home-watch-ad" ${canWatchAd(save) ? '' : 'disabled'} data-tooltip="${
+    canWatchAd(save)
+      ? `Mirar video para ganar ${AD_REWARD.coins} monedas (${adsWatchedToday(save)}/${AD_DAILY_LIMIT} hoy)`
+      : `Ya viste el máximo de ${AD_DAILY_LIMIT} anuncios de hoy — volvé mañana`
+  }">📺</button>
 
     <div class="missions-tab-wrap ${missionsTabExpanded ? 'expanded' : ''}" id="missions-tab-wrap">
       <aside class="missions-widget missions-tab-panel">
@@ -506,25 +516,11 @@ function renderHome() {
       renderHome();
     };
   }
-  const playAiBtn = document.getElementById('play-vs-ai');
-  if (playAiBtn) {
-    playAiBtn.onclick = () => {
-      playMenuOpen = false;
-      playSelectedDeck('ai');
-    };
-  }
   const playOnlineBtn = document.getElementById('play-online');
   if (playOnlineBtn) {
     playOnlineBtn.onclick = () => {
       playMenuOpen = false;
       playSelectedDeck('online');
-    };
-  }
-  const playAutoAiBtn = document.getElementById('play-auto-ai');
-  if (playAutoAiBtn) {
-    playAutoAiBtn.onclick = () => {
-      playMenuOpen = false;
-      playSelectedDeck('ai', true);
     };
   }
   const playAutoOnlineBtn = document.getElementById('play-auto-online');
@@ -553,8 +549,8 @@ function renderHome() {
   if (playTournamentBtn) {
     playTournamentBtn.onclick = () => {
       playMenuOpen = false;
-      if (!resolvePlayFaction(false)) {
-        showToast('Elegí un mazo completo en "Mis Mazos" antes de entrar a un torneo.');
+      if (!isDeckReady(false)) {
+        showToast('Completá tu mazo (16 cartas) en "Mis Mazos" antes de entrar a un torneo.');
         go('deckSelect');
         return;
       }
@@ -1484,41 +1480,30 @@ function renderFactionPick() {
   });
 }
 
+// Mis Mazos: since a deck can now freely mix cards from every faction (see
+// store.js), there's exactly one deck per mode (Normal / 🤖 Auto) instead
+// of one per faction — this screen picks the hero (special ability +
+// attribute track) that represents that deck in battle, independent of
+// which factions its cards actually come from, then hands off to
+// renderDeckbuilder() to edit the card list itself.
 function renderDeckSelect() {
-  const deckKey = deckMode === 'auto' ? 'autoDecks' : 'decks';
+  const deckKey = deckMode === 'auto' ? 'autoDeck' : 'deck';
   const selectedField = deckMode === 'auto' ? 'selectedAutoFaction' : 'selectedFaction';
-  const rows = Object.values(FACTIONS)
+  const count = Store.deckCount(save, deckKey);
+  const complete = count === Store.CONSTANTS.DECK_SIZE;
+  const pct = Math.min(100, Math.round((count / Store.CONSTANTS.DECK_SIZE) * 100));
+  const selectedHeroFaction = resolvePlayHero(deckMode === 'auto');
+  const heroChips = Object.values(FACTIONS)
     .filter((faction) => HEROES.some((h) => h.faction === faction.id))
     .map((faction) => {
-      const count = Store.deckCount(save, faction.id, deckKey);
-      const complete = count === Store.CONSTANTS.DECK_SIZE;
-      const pct = Math.min(100, Math.round((count / Store.CONSTANTS.DECK_SIZE) * 100));
       const hero = HEROES.find((h) => h.faction === faction.id);
-      const selected = save[selectedField] === faction.id;
-      const selectTooltip = !complete
-        ? `Necesita ${Store.CONSTANTS.DECK_SIZE} cartas para poder jugarse`
-        : selected
-          ? 'Mazo seleccionado para jugar'
-          : 'Usar este mazo para jugar';
+      const selected = save[selectedField] ? save[selectedField] === faction.id : selectedHeroFaction === faction.id;
       return `
-        <div class="deck-row theme-${faction.theme} ${selected ? 'selected' : ''}">
-          <button
-            class="deck-row-select"
-            data-select-faction="${faction.id}"
-            data-tooltip="${selectTooltip}"
-            ${complete ? '' : 'disabled'}
-          >${selected ? '✓' : ''}</button>
-          <div class="deck-row-body" data-open-faction="${faction.id}">
-            <div class="deck-row-top">
-              <div class="deck-row-names">
-                <span class="deck-row-faction">${faction.name}</span>
-                <span class="deck-row-hero">${hero ? hero.name : ''}</span>
-              </div>
-              <span class="deck-row-count ${complete ? 'complete' : ''}">${count}/${Store.CONSTANTS.DECK_SIZE}${complete ? ' ✓' : ''}</span>
-            </div>
-            <div class="deck-row-bar"><div class="deck-row-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
-          </div>
-        </div>`;
+        <button class="hero-chip theme-${faction.theme} ${selected ? 'selected' : ''}" data-select-hero="${faction.id}" data-tooltip="${escapeAttr(`${hero.name} — ${hero.special.label}: ${hero.special.text}`)}">
+          <span class="hero-chip-icon">${FACTION_PERKS[faction.id]?.icon || '⭐'}</span>
+          <span class="hero-chip-name">${hero.name}</span>
+          <span class="hero-chip-faction">${faction.name}</span>
+        </button>`;
     })
     .join('');
   app.innerHTML = `
@@ -1532,12 +1517,19 @@ function renderDeckSelect() {
       <p class="hint">
         ${
           deckMode === 'auto'
-            ? 'Mazos para el modo Autodeckbuilder: se juegan solos, una carta por turno, sin elegir atributos a mano.'
-            : `Cada mazo necesita exactamente ${Store.CONSTANTS.DECK_SIZE} cartas (máximo ${Store.CONSTANTS.MAX_COPIES} copias de cada una) para poder jugar.`
+            ? 'Se juega solo, una carta por turno, sin elegir atributos a mano.'
+            : `Tu mazo necesita exactamente ${Store.CONSTANTS.DECK_SIZE} cartas (máximo ${Store.CONSTANTS.MAX_COPIES} copias de cada una) para poder jugar — podés mezclar cartas de cualquier facción libremente.`
         }
-        Marcá ✓ el que querés usar — ese es el que se juega al tocar "Jugar".
       </p>
-      <div class="faction-list">${rows}</div>
+      <h3>Elegí tu héroe</h3>
+      <p class="hint">Define tu especial y tus atributos en batalla — no tiene que coincidir con las facciones de tu mazo.</p>
+      <div class="hero-chip-row">${heroChips}</div>
+      <div class="deck-progress">
+        <div class="deck-progress-label">${count}/${Store.CONSTANTS.DECK_SIZE} cartas${complete ? ' · Mazo completo ✓' : ''}</div>
+        <div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
+      </div>
+      <p class="hint">🛡️🔥🌑⛰️ Tené 4 o más criaturas de una misma facción en juego para activar su bono — podés tener hasta dos bonos activos a la vez si mezclás facciones.</p>
+      <button class="btn primary" id="open-deckbuilder">✏️ Editar mazo</button>
     </div>`;
   document.getElementById('back').onclick = () => go('home');
   app.querySelectorAll('[data-mode]').forEach((el) => {
@@ -1546,33 +1538,28 @@ function renderDeckSelect() {
       renderDeckSelect();
     };
   });
-  app.querySelectorAll('[data-open-faction]').forEach((el) => {
+  document.getElementById('open-deckbuilder').onclick = () => go('deckbuilder');
+  app.querySelectorAll('[data-select-hero]').forEach((el) => {
     el.onclick = () => {
-      currentDeckFaction = el.dataset.openFaction;
-      go('deckbuilder');
-    };
-  });
-  app.querySelectorAll('[data-select-faction]').forEach((el) => {
-    el.onclick = (e) => {
-      e.stopPropagation();
-      const faction = el.dataset.selectFaction;
-      if (Store.deckCount(save, faction, deckKey) !== Store.CONSTANTS.DECK_SIZE) {
-        showToast(`Este mazo necesita ${Store.CONSTANTS.DECK_SIZE} cartas para poder seleccionarse.`);
-        return;
-      }
-      save[selectedField] = faction;
+      save[selectedField] = el.dataset.selectHero;
       persist();
       renderDeckSelect();
     };
   });
 }
 
+// Freeform card browser for the single Normal/Auto deck — grouped by
+// faction purely for browsability (same section layout as Colección), not
+// because the deck is restricted to one. Adding cards from several
+// factions is exactly the point now; deckFactionBreakdown below just tells
+// the player how close each faction is to its 4-creature perk threshold.
 function renderDeckbuilder() {
-  const faction = currentDeckFaction;
-  const deckKey = deckMode === 'auto' ? 'autoDecks' : 'decks';
-  const count = Store.deckCount(save, faction, deckKey);
+  const deckKey = deckMode === 'auto' ? 'autoDeck' : 'deck';
+  const deck = save[deckKey];
+  const count = Store.deckCount(save, deckKey);
   const pct = Math.min(100, Math.round((count / Store.CONSTANTS.DECK_SIZE) * 100));
   const complete = count === Store.CONSTANTS.DECK_SIZE;
+  const breakdown = Store.deckFactionBreakdown(deck);
 
   const deckPoolSection = (pool, sectionFaction) => {
     const ids = pool.map((c) => c.id).filter((id) => (save.collection[id] || 0) > 0);
@@ -1580,9 +1567,9 @@ function renderDeckbuilder() {
     const itemsHtml = ids
       .map((id) => {
         const card = getCard(id);
-        const inDeck = save[deckKey][faction][id] || 0;
+        const inDeck = deck[id] || 0;
         const owned = save.collection[id];
-        const canAdd = Store.canAddToDeck(save, faction, id, deckKey);
+        const canAdd = Store.canAddToDeck(save, id, deckKey);
         return `
         <div class="collection-slot deck-slot">
           ${cardVisual(card, inDeck > 0 ? 'in-deck' : '')}
@@ -1594,24 +1581,27 @@ function renderDeckbuilder() {
         </div>`;
       })
       .join('');
+    const inDeckCount = breakdown[sectionFaction.id] || 0;
+    const perk = FACTION_PERKS[sectionFaction.id];
+    const perkNote = perk ? ` · ${inDeckCount}/4 en el mazo para el bono de ${perk.icon}` : '';
     return `
       <div class="faction-section theme-${sectionFaction.theme}">
         <div class="faction-section-header">
           <h3>${sectionFaction.name}</h3>
-          <span class="faction-section-tagline">${sectionFaction.tagline}</span>
+          <span class="faction-section-tagline">${sectionFaction.tagline}${perkNote}</span>
         </div>
         <div class="card-grid">${itemsHtml}</div>
       </div>`;
   };
 
-  const sections =
-    deckPoolSection(cardsForFaction(faction), FACTIONS[faction]) +
-    deckPoolSection(cardsForFaction('neutral'), FACTIONS.neutral);
+  const sections = Object.values(FACTIONS)
+    .map((faction) => deckPoolSection(cardsForFaction(faction.id), faction))
+    .join('');
 
   app.innerHTML = `
     ${header()}
     <div class="screen deck-select-screen">
-      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>${FACTIONS[faction].name}${deckMode === 'auto' ? ' 🤖' : ''}</h2></div>
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Editar mazo${deckMode === 'auto' ? ' 🤖' : ''}</h2></div>
       <div class="deck-progress">
         <div class="deck-progress-label">${count}/${Store.CONSTANTS.DECK_SIZE} cartas${complete ? ' · Mazo completo ✓' : ''}</div>
         <div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
@@ -1621,21 +1611,21 @@ function renderDeckbuilder() {
     </div>`;
   document.getElementById('back').onclick = () => go('deckSelect');
   document.getElementById('auto-build-deck').onclick = () => {
-    Store.autoBuildDeck(save, faction, deckKey);
+    Store.autoBuildDeck(save, deckKey);
     persist();
     sfx.click();
     renderDeckbuilder();
   };
   app.querySelectorAll('[data-action="add"]').forEach((btn) => {
     btn.onclick = () => {
-      Store.addToDeck(save, faction, btn.dataset.id, deckKey);
+      Store.addToDeck(save, btn.dataset.id, deckKey);
       persist();
       renderDeckbuilder();
     };
   });
   app.querySelectorAll('[data-action="remove"]').forEach((btn) => {
     btn.onclick = () => {
-      Store.removeFromDeck(save, faction, btn.dataset.id, deckKey);
+      Store.removeFromDeck(save, btn.dataset.id, deckKey);
       persist();
       renderDeckbuilder();
     };
@@ -1664,11 +1654,13 @@ function renderCollection() {
           return `<div class="collection-slot">${cardVisual(card, owned === 0 ? 'locked' : '')}<div class="owned-count">x${owned}</div>${actionHtml}</div>`;
         })
         .join('');
+      const perk = FACTION_PERKS[faction.id];
       return `
         <div class="faction-section theme-${faction.theme}">
           <div class="faction-section-header">
             <h3>${faction.name}</h3>
             <span class="faction-section-tagline">${faction.tagline}</span>
+            ${perk ? `<span class="faction-section-perk" data-tooltip="${escapeAttr(perk.text)}">${perk.icon} ${perk.name}</span>` : ''}
             <span class="faction-section-progress">${factionOwned}/${factionCards.length}</span>
           </div>
           <div class="card-grid">${cardsHtml}</div>
@@ -1872,7 +1864,9 @@ function renderShop() {
       <p class="hint">Garantizan cartas sólo de esa facción — sin cartas de otra facción ni del Gremio Errante. Por eso cuestan 1.5x el Sobre de Bronce.</p>
       <div class="faction-pack-grid">${themedPacksHtml}</div>
 
-      <button class="btn ad" id="watch-ad">📺 Ver anuncio → +${AD_REWARD.coins} monedas</button>
+      <button class="btn ad" id="watch-ad" ${canWatchAd(save) ? '' : 'disabled'}>
+        📺 ${canWatchAd(save) ? `Ver anuncio → +${AD_REWARD.coins} monedas (${adsWatchedToday(save)}/${AD_DAILY_LIMIT} hoy)` : `Máximo diario alcanzado (${AD_DAILY_LIMIT}/${AD_DAILY_LIMIT})`}
+      </button>
 
       <h3>Monedas (compra simulada)</h3>
       <div class="sku-grid">${coinSkus}</div>
@@ -2105,17 +2099,42 @@ function spawnPackBurst(envelope) {
   setTimeout(() => burst.remove(), 700);
 }
 
+// NOTE: no real ad network is wired up here (that needs an AdMob/Unity Ads
+// account + SDK keys the user has to provide) — this plays a timed,
+// un-skippable placeholder "ad" screen and only pays out once it's watched
+// through, same contract a real rewarded-ad SDK callback would give us, so
+// swapping in a real SDK later is just replacing this function's body.
+const AD_WATCH_MS = 5000;
+
 function watchAd(returnScreen = 'shop') {
-  app.innerHTML = `${header()}<div class="screen"><h2>📺 Reproduciendo anuncio…</h2><p>(simulado)</p></div>`;
+  if (!canWatchAd(save)) {
+    showToast(`Ya viste el máximo de ${AD_DAILY_LIMIT} anuncios hoy — volvé mañana.`);
+    return;
+  }
+  let secondsLeft = Math.ceil(AD_WATCH_MS / 1000);
+  app.innerHTML = `
+    ${header()}
+    <div class="screen center">
+      <h2>📺 Reproduciendo anuncio…</h2>
+      <p class="ad-countdown" id="ad-countdown">${secondsLeft}s</p>
+      <p class="hint">(sin SDK de anuncios real conectado todavía — placeholder cronometrado)</p>
+    </div>`;
+  const countdownEl = document.getElementById('ad-countdown');
+  const tick = setInterval(() => {
+    secondsLeft -= 1;
+    if (countdownEl) countdownEl.textContent = `${Math.max(0, secondsLeft)}s`;
+  }, 1000);
   setTimeout(() => {
+    clearInterval(tick);
     save.coins += AD_REWARD.coins;
+    recordAdWatch(save);
     Missions.addMissionProgress(save, 'adsWatched', 1);
     Stats.bumpStat(save, 'adsWatched', 1);
     Stats.bumpStat(save, 'coinsEarned', AD_REWARD.coins);
     persist();
     sfx.coin();
     go(returnScreen);
-  }, 1500);
+  }, AD_WATCH_MS);
 }
 
 function mockPurchase(skuId) {
@@ -2313,14 +2332,14 @@ function bracketPrizeReveal(prize) {
 // renderBattle is entirely unmodified here too.
 
 async function startTournamentEntry() {
-  const faction = resolvePlayFaction(false);
-  if (!faction) {
+  if (!isDeckReady(false)) {
     save.tournamentEntries = (save.tournamentEntries || 0) + 1;
     persist();
-    showToast('Elegí un mazo completo en "Mis Mazos" antes de entrar a un torneo.');
+    showToast('Completá tu mazo (16 cartas) en "Mis Mazos" antes de entrar a un torneo.');
     go('deckSelect');
     return;
   }
+  const faction = resolvePlayHero(false);
   tournamentQueueStatus = null;
   screen = 'tournamentWaiting';
   render();
@@ -2333,7 +2352,7 @@ async function startTournamentEntry() {
     go('home');
     return;
   }
-  Net.queueTournament(faction, save.decks[faction]);
+  Net.queueTournament(faction, save.deck);
 }
 
 function renderTournamentWaiting() {
@@ -2355,55 +2374,51 @@ function renderTournamentWaiting() {
 
 // ---------------- Match lifecycle ----------------
 
-// The deck selected in "Mis Mazos" (save.selectedFaction), falling back to
-// the first faction with a complete deck for a player who's never opened
-// that screen — every faction starts with a full starter deck, so a brand
-// new player can still hit the single home "Jugar" button immediately.
-function resolvePlayFaction(auto = false) {
-  const deckKey = auto ? 'autoDecks' : 'decks';
-  const selectedField = auto ? 'selectedAutoFaction' : 'selectedFaction';
-  if (save[selectedField] && Store.deckCount(save, save[selectedField], deckKey) === Store.CONSTANTS.DECK_SIZE) {
-    return save[selectedField];
-  }
-  return Object.keys(FACTIONS).find((f) => f !== 'neutral' && Store.deckCount(save, f, deckKey) === Store.CONSTANTS.DECK_SIZE) || null;
+// A deck no longer belongs to a single faction (see store.js) — "which
+// faction" now only means which hero (special ability + attribute track)
+// represents the player in battle, chosen separately in "Mis Mazos" and
+// stored the same way as before (save.selectedFaction/selectedAutoFaction).
+// Falls back to whichever faction is best represented in the deck, so a
+// player who's never opened the hero picker still gets something sensible.
+function resolvePlayHero(auto = false) {
+  const field = auto ? 'selectedAutoFaction' : 'selectedFaction';
+  if (save[field] && HEROES.some((h) => h.faction === save[field])) return save[field];
+  const breakdown = Store.deckFactionBreakdown(save[auto ? 'autoDeck' : 'deck']);
+  const best = Object.entries(breakdown)
+    .filter(([f]) => f !== 'neutral')
+    .sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : HEROES[0].faction;
 }
 
-// The home screen's "Jugar vs IA"/"Jugar Online" popup (normal and 🤖 Auto
-// variants) all resolve to whichever deck is selected in "Mis Mazos" for
-// that mode and skip hero-select entirely.
+function isDeckReady(auto = false) {
+  return Store.deckCount(save, auto ? 'autoDeck' : 'deck') === Store.CONSTANTS.DECK_SIZE;
+}
+
+// The home screen's "Modo Normal"/"Autodeckbuilder" buttons — both are
+// online-only now (see startOnlineMatch: matchmaking falls back to a bot
+// opponent if no real player turns up within a few seconds, but there's no
+// offline-vs-AI mode to fall back to on the client itself anymore).
 function playSelectedDeck(mode, auto = false) {
-  const faction = resolvePlayFaction(auto);
-  if (!faction) {
-    showToast(`Elegí un mazo${auto ? ' 🤖 Auto' : ''} completo en "Mis Mazos" antes de jugar.`);
+  if (!isDeckReady(auto)) {
+    showToast(`Completá tu mazo${auto ? ' 🤖 Auto' : ''} (${Store.CONSTANTS.DECK_SIZE} cartas) en "Mis Mazos" antes de jugar.`);
     go('deckSelect');
     return;
   }
-  save[auto ? 'selectedAutoFaction' : 'selectedFaction'] = faction;
-  persist();
-  if (mode === 'ai') {
-    startMatch(faction, auto);
-  } else if (mode === 'create') {
-    onlineIntent = { mode: 'create', auto };
-    startOnlineMatch(faction, auto);
-  } else {
-    onlineIntent = { mode: 'quick', auto };
-    startOnlineMatch(faction, auto);
-  }
+  const faction = resolvePlayHero(auto);
+  onlineIntent = { mode: mode === 'create' ? 'create' : 'quick', auto };
+  startOnlineMatch(faction, auto);
 }
 
 // Counterpart to the Friends screen's "Crear sala" — joins a private room by
-// code using whichever deck is selected, same skip-hero-select convention.
+// code using the player's own deck/hero.
 function joinRoomByCode(code) {
-  const faction = resolvePlayFaction();
-  if (!faction) {
-    showToast('Elegí un mazo completo en "Mis Mazos" antes de jugar.');
+  if (!isDeckReady(false)) {
+    showToast('Completá tu mazo (16 cartas) en "Mis Mazos" antes de jugar.');
     go('deckSelect');
     return;
   }
-  save.selectedFaction = faction;
-  persist();
   onlineIntent = { mode: 'join', code };
-  startOnlineMatch(faction);
+  startOnlineMatch(resolvePlayHero(false));
 }
 
 function startGuidedTutorialMatch(faction) {
@@ -2412,6 +2427,11 @@ function startGuidedTutorialMatch(faction) {
   startMatch(faction);
 }
 
+// Offline, purely local bot match — only used internally by the onboarding
+// guided tutorial now (see startGuidedTutorialMatch). Every other "play
+// vs someone" path goes through startOnlineMatch: real matchmaking, per
+// task requirements, is online-only (with a bot fallback if no human is
+// found — see startOnlineMatch/Net.quickMatch).
 function startMatch(faction, auto = false) {
   // 'neutral' has no hero (see cards.js) — it must never be picked as the
   // AI's own faction, only mixed into decks as filler.
@@ -2419,8 +2439,8 @@ function startMatch(faction, auto = false) {
   const aiFaction = aiFactions[Math.floor(Math.random() * aiFactions.length)];
   const playerHero = HEROES.find((h) => h.faction === faction);
   const aiHero = HEROES.find((h) => h.faction === aiFaction);
-  const aiDeck = Store.buildAiDeck(aiFaction);
-  const playerDeck = auto ? save.autoDecks[faction] : save.decks[faction];
+  const aiDeck = Store.buildAiDeck();
+  const playerDeck = auto ? save.autoDeck : save.deck;
   battle = newGame(playerDeck, playerHero.id, aiDeck, aiHero.id);
   onlineRoom = null;
   prevOccupancy = new Set();
@@ -2552,7 +2572,7 @@ async function startOnlineMatch(faction, auto = false) {
     return;
   }
 
-  const deck = auto ? save.autoDecks[faction] : save.decks[faction];
+  const deck = auto ? save.autoDeck : save.deck;
   if (intent.mode === 'quick') {
     onlineStatus = { kind: 'queued' };
     Net.quickMatch(faction, deck, auto);
@@ -2832,23 +2852,38 @@ function pileHtml(kind, icon, label, ids, side) {
     </div>`;
 }
 
-function perkIndicatorHtml(state, side) {
-  const perk = getFactionPerk(state, side);
-  if (!perk) return '<div class="perk-indicator"></div>';
-  const count = countFieldCreatures(state[side]);
-  const status = perk.active ? 'Activo ahora.' : `Inactivo — tenés ${count}/4 criaturas en el campo.`;
-  const tooltip = `${perk.name}\n${perk.text}\n${status}`;
-  return `
-    <div class="perk-indicator ${perk.active ? 'active' : ''}" data-tooltip="${escapeAttr(tooltip)}">
-      <span class="perk-indicator-icon">${perk.icon}</span>
-    </div>`;
+// A player can have more than one faction perk active at once now that
+// decks aren't mono-faction (see store.js) — this renders one pill per
+// faction that has at least one creature of it on the field, ordered by
+// count so the closest-to-active (or already active) ones lead.
+function perkIndicatorsHtml(state, side) {
+  const threshold = state.perkThreshold || 4;
+  const counts = countFieldCreaturesByFaction(state[side]);
+  const entries = Object.values(FACTION_PERKS)
+    .filter((perk) => (counts[perk.id] || 0) > 0)
+    .sort((a, b) => (counts[b.id] || 0) - (counts[a.id] || 0));
+  if (!entries.length) return '<div class="perk-indicator-row"></div>';
+  const pills = entries
+    .map((perk) => {
+      const count = counts[perk.id] || 0;
+      const active = count >= threshold;
+      const status = active ? 'Activo ahora.' : `Inactivo — tenés ${count}/${threshold} criaturas de esta facción en el campo.`;
+      const tooltip = `${perk.name}\n${perk.text}\n${status}`;
+      return `
+        <div class="perk-indicator ${active ? 'active' : ''}" data-tooltip="${escapeAttr(tooltip)}">
+          <span class="perk-indicator-icon">${perk.icon}</span>
+          <span class="perk-indicator-count">${count}/${threshold}</span>
+        </div>`;
+    })
+    .join('');
+  return `<div class="perk-indicator-row">${pills}</div>`;
 }
 
 function perksSidebarHtml(state) {
   return `
     <div class="perks-sidebar">
-      ${perkIndicatorHtml(state, 'p2')}
-      ${perkIndicatorHtml(state, 'p1')}
+      ${perkIndicatorsHtml(state, 'p2')}
+      ${perkIndicatorsHtml(state, 'p1')}
     </div>`;
 }
 

@@ -1,10 +1,19 @@
-import { getHero } from './cards.js';
+import { getCard } from './cards.js';
 
 // Each faction's passive battlefield aura. Purely a function of the current
 // board — not a one-time trigger — so it turns on and off live as
 // creatures are deployed, killed, or moved, for both sides independently.
 // "ally" auras buff their own side; "enemy" auras (Umbra) project onto the
 // opponent's side instead.
+//
+// Activation is driven entirely by how many creatures of THAT faction a
+// player has on the field — not by which hero they picked. Since deck
+// building no longer requires a single faction (see store.js), a player can
+// field enough creatures of two different factions at once to have two
+// auras active simultaneously; the amounts below were halved from the old
+// mono-faction-only design (where at most one aura could ever be active at
+// a time) to keep a two-aura stack from just being strictly double the old
+// max power.
 export const FACTION_PERKS = {
   albura: {
     id: 'albura',
@@ -12,8 +21,8 @@ export const FACTION_PERKS = {
     icon: '🛡️',
     target: 'ally',
     stat: 'retaliate',
-    amount: 2,
-    text: '+2 Contraataque a tus criaturas mientras tengas 4 o más en el campo.',
+    amount: 1,
+    text: '+1 Contraataque a tus criaturas mientras tengas 4 o más de Albura en el campo.',
   },
   ignara: {
     id: 'ignara',
@@ -21,8 +30,8 @@ export const FACTION_PERKS = {
     icon: '🔥',
     target: 'ally',
     stat: 'atk',
-    amount: 2,
-    text: '+2 Ataque a tus criaturas mientras tengas 4 o más en el campo.',
+    amount: 1,
+    text: '+1 Ataque a tus criaturas mientras tengas 4 o más de Ignara en el campo.',
   },
   umbra: {
     id: 'umbra',
@@ -31,7 +40,7 @@ export const FACTION_PERKS = {
     target: 'enemy',
     stat: 'atk_life',
     amount: -1,
-    text: '-1 Ataque y Vida a las criaturas rivales mientras tengas 4 o más criaturas en el campo.',
+    text: '-1 Ataque y Vida a las criaturas rivales mientras tengas 4 o más de Umbra en el campo.',
   },
   terra: {
     id: 'terra',
@@ -39,13 +48,14 @@ export const FACTION_PERKS = {
     icon: '⛰️',
     target: 'ally',
     stat: 'life',
-    amount: 2,
-    text: '+2 Vida a tus criaturas mientras tengas 4 o más en el campo.',
+    amount: 1,
+    text: '+1 Vida a tus criaturas mientras tengas 4 o más de Terra en el campo.',
   },
 };
 
 const DEFAULT_ACTIVATION_THRESHOLD = 4;
 
+// Total creatures on the field, regardless of faction.
 export function countFieldCreatures(player) {
   let n = 0;
   for (const lane of player.battlefield) {
@@ -55,18 +65,30 @@ export function countFieldCreatures(player) {
   return n;
 }
 
-// The perk belonging to `side`'s hero (by faction), plus whether it's
-// currently active. Returns null for factions without a perk (neutral has
-// no hero, so it never reaches here in practice). The activation threshold
-// is normally 4, but battle.js's newGame can stamp a lower state.perkThreshold
-// onto the match (Draft mode plays it at 2 — see src/draft.js).
-export function getFactionPerk(state, side) {
-  const p = state[side];
-  const hero = getHero(p.heroId);
-  const perk = hero && FACTION_PERKS[hero.faction];
-  if (!perk) return null;
+// Per-faction breakdown of this player's own battlefield — neutral cards
+// never count toward any faction's threshold, since they don't belong to
+// one.
+export function countFieldCreaturesByFaction(player) {
+  const counts = {};
+  for (const lane of player.battlefield) {
+    for (const slot of [lane.front, lane.back]) {
+      if (!slot) continue;
+      const card = getCard(slot.cardId);
+      if (!card || card.faction === 'neutral') continue;
+      counts[card.faction] = (counts[card.faction] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+// Every perk currently active for `side` — zero, one, or more at once. The
+// activation threshold is normally 4, but battle.js's newGame can stamp a
+// lower state.perkThreshold onto the match (Draft mode plays it at 2 — see
+// src/draft.js).
+export function getActiveFactionPerks(state, side) {
   const threshold = state.perkThreshold || DEFAULT_ACTIVATION_THRESHOLD;
-  return { ...perk, active: countFieldCreatures(p) >= threshold };
+  const counts = countFieldCreaturesByFaction(state[side]);
+  return Object.values(FACTION_PERKS).filter((perk) => (counts[perk.id] || 0) >= threshold);
 }
 
 function applyPerkStat(mod, perk) {
@@ -79,15 +101,17 @@ function applyPerkStat(mod, perk) {
 }
 
 // Net {atk, retaliate, life} modifier every creature belonging to `side`
-// currently receives: its own side's ally perk (if active) plus the
-// opposing side's perk if that one projects onto opponents (Umbra).
+// currently receives: the sum of its own side's active ally perks, plus any
+// of the opposing side's active perks that project onto opponents (Umbra).
 export function getStatModifier(state, side) {
   const mod = { atk: 0, retaliate: 0, life: 0 };
-  const own = getFactionPerk(state, side);
-  if (own && own.active && own.target === 'ally') applyPerkStat(mod, own);
+  for (const perk of getActiveFactionPerks(state, side)) {
+    if (perk.target === 'ally') applyPerkStat(mod, perk);
+  }
   const enemySide = side === 'p1' ? 'p2' : 'p1';
-  const enemy = getFactionPerk(state, enemySide);
-  if (enemy && enemy.active && enemy.target === 'enemy') applyPerkStat(mod, enemy);
+  for (const perk of getActiveFactionPerks(state, enemySide)) {
+    if (perk.target === 'enemy') applyPerkStat(mod, perk);
+  }
   return mod;
 }
 

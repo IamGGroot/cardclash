@@ -91,4 +91,29 @@ export function matchReward(won) {
   return won ? { coins: 30 } : { coins: 10 };
 }
 
-export const AD_REWARD = { coins: 40 };
+export const AD_REWARD = { coins: 10 };
+export const AD_DAILY_LIMIT = 10;
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export function ensureAdWatchState(save) {
+  const today = todayStr();
+  if (!save.adWatch || save.adWatch.date !== today) {
+    save.adWatch = { date: today, count: 0 };
+  }
+  return save.adWatch;
+}
+
+export function adsWatchedToday(save) {
+  return ensureAdWatchState(save).count;
+}
+
+export function canWatchAd(save) {
+  return ensureAdWatchState(save).count < AD_DAILY_LIMIT;
+}
+
+export function recordAdWatch(save) {
+  ensureAdWatchState(save).count += 1;
+}
