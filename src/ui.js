@@ -14,6 +14,7 @@ import {
   endTurn,
 } from './battle.js';
 import { runAiTurnSteps } from './ai.js';
+import { getFactionPerk, countFieldCreatures, effectiveAtk, effectiveRetaliate, effectiveLife, effectiveMaxLife } from './factionPerks.js';
 import { cardArtSVG, AVATARS } from './art.js';
 import * as Missions from './missions.js';
 import * as DailyDeals from './dailyDeals.js';
@@ -53,8 +54,8 @@ let aiToastHideTimer = null;
 
 // ---- Online multiplayer state ----
 let onlineRoom = null; // { code } once a real match against another player is live
-let onlineIntent = null; // { mode: 'quick'|'create'|'join', code? } set before entering heroSelect online
-let onlineStatus = null; // { kind: 'connecting'|'queued'|'waiting'|'error', message?, code? } drives renderOnlineWaiting/renderOnlineLobby
+let onlineIntent = null; // { mode: 'quick'|'create'|'join', code? } set right before startOnlineMatch()
+let onlineStatus = null; // { kind: 'connecting'|'queued'|'creating'|'waitingCode'|'joining'|'error', message?, code? } drives renderOnlineWaiting
 let pendingTrophyResult = null; // { trophies, delta } from the most recent online matchEnd, consumed once by endMatch()
 
 // ---- Guided first-battle tutorial coach ----
@@ -144,6 +145,8 @@ function startDailyResetTimer(elId, onExpire) {
 }
 
 function header() {
+  const missionsClaimable = Missions.countClaimable(save);
+  const spClaimable = SeasonPass.countClaimable(save);
   return `
     <div class="topbar">
       <button class="profile-chip" id="profile-chip" data-tooltip="Perfil y cuenta">
@@ -153,6 +156,16 @@ function header() {
       <div class="currency">🪙 ${save.coins}</div>
       <div class="currency">💎 ${save.gems}</div>
       <div class="currency">✨ ${save.dust || 0}</div>
+      ${
+        missionsClaimable
+          ? `<button class="topbar-claim-btn" id="topbar-claim-missions" data-tooltip="Tenés misiones para reclamar">🎯<span class="topbar-claim-badge">${missionsClaimable}</span></button>`
+          : ''
+      }
+      ${
+        spClaimable
+          ? `<button class="topbar-claim-btn" id="topbar-claim-season" data-tooltip="Tenés recompensas del pase para reclamar">🎫<span class="topbar-claim-badge">${spClaimable}</span></button>`
+          : ''
+      }
       <div class="battle-menu-wrap" id="topbar-menu-wrap">
         <button class="battle-menu-btn" id="topbar-menu-btn">☰</button>
         ${
@@ -199,6 +212,11 @@ function rerenderHeader() {
 function wireHeader() {
   const profileBtn = document.getElementById('profile-chip');
   if (profileBtn) profileBtn.onclick = () => go('profile');
+
+  const missionsClaimBtn = document.getElementById('topbar-claim-missions');
+  if (missionsClaimBtn) missionsClaimBtn.onclick = () => go('missions');
+  const spClaimBtn = document.getElementById('topbar-claim-season');
+  if (spClaimBtn) spClaimBtn.onclick = () => go('seasonPass');
 
   const menuBtn = document.getElementById('topbar-menu-btn');
   if (menuBtn) {
@@ -1120,6 +1138,12 @@ function renderFriends() {
         <button class="btn" id="add-friend-btn">Agregar</button>
       </div>
       <div id="friends-list" class="friends-list"><p class="hint">Cargando…</p></div>
+      <h3 class="profile-section-title">¿Tenés un código de sala?</h3>
+      <p class="hint">Si un amigo te compartió un código con "Crear sala", unite directo acá.</p>
+      <div class="friend-add-row">
+        <input id="join-room-code-input" class="join-code-input" placeholder="Código de sala" maxlength="5" autocapitalize="characters">
+        <button class="btn" id="join-room-code-btn">Unirse</button>
+      </div>
     </div>`;
 
   document.getElementById('back').onclick = () => go('home');
@@ -1144,6 +1168,15 @@ function renderFriends() {
     } catch (err) {
       showToast(err.message || 'No se pudo agregar.');
     }
+  };
+  document.getElementById('join-room-code-btn').onclick = () => {
+    const input = document.getElementById('join-room-code-input');
+    const code = input.value.trim().toUpperCase();
+    if (!code) {
+      input.focus();
+      return;
+    }
+    joinRoomByCode(code);
   };
 
   loadFriends();
@@ -1192,49 +1225,6 @@ function renderFactionPick() {
         .then((account) => syncAccountToSave(account, seq))
         .catch(() => {});
       startGuidedTutorialMatch(faction);
-    };
-  });
-}
-
-function renderHeroSelect() {
-  const cardsHtml = HEROES.map((hero) => {
-    const faction = FACTIONS[hero.faction];
-    const count = Store.deckCount(save, hero.faction);
-    const ready = count === Store.CONSTANTS.DECK_SIZE;
-    return `
-      <div class="hero-card theme-${faction.theme}" data-faction="${hero.faction}">
-        <div class="hero-card-faction">${faction.name}</div>
-        <div class="hero-card-name">${hero.name}</div>
-        <div class="hero-card-tagline">${faction.tagline}</div>
-        <div class="hero-card-special"><strong>${hero.special.label}:</strong> ${hero.special.text}</div>
-        <div class="hero-card-deck">Mazo: ${count}/${Store.CONSTANTS.DECK_SIZE}${ready ? '' : ' ⚠️'}</div>
-      </div>`;
-  }).join('');
-  app.innerHTML = `
-    ${header()}
-    <div class="screen">
-      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>${onlineIntent ? 'Elegí tu héroe (online)' : 'Elegí tu héroe'}</h2></div>
-      <div class="hero-select-grid">${cardsHtml}</div>
-    </div>`;
-  document.getElementById('back').onclick = () => {
-    if (onlineIntent) {
-      onlineIntent = null;
-      go('onlineLobby');
-    } else {
-      go('home');
-    }
-  };
-  app.querySelectorAll('.hero-card').forEach((el) => {
-    el.onclick = () => {
-      const faction = el.dataset.faction;
-      if (Store.deckCount(save, faction) !== Store.CONSTANTS.DECK_SIZE) {
-        alert(`Tu mazo necesita exactamente ${Store.CONSTANTS.DECK_SIZE} cartas para jugar. Vamos a editarlo.`);
-        currentDeckFaction = faction;
-        go('deckbuilder');
-        return;
-      }
-      if (onlineIntent) startOnlineMatch(faction);
-      else startMatch(faction);
     };
   });
 }
@@ -1798,6 +1788,21 @@ function playSelectedDeck(mode) {
   }
 }
 
+// Counterpart to the Friends screen's "Crear sala" — joins a private room by
+// code using whichever deck is selected, same skip-hero-select convention.
+function joinRoomByCode(code) {
+  const faction = resolvePlayFaction();
+  if (!faction) {
+    showToast('Elegí un mazo completo en "Mis Mazos" antes de jugar.');
+    go('deckSelect');
+    return;
+  }
+  save.selectedFaction = faction;
+  persist();
+  onlineIntent = { mode: 'join', code };
+  startOnlineMatch(faction);
+}
+
 function startGuidedTutorialMatch(faction) {
   tutorialCoachActive = true;
   tutorialProgress = { heroAction: false, deployed: false, endedTurn: false, attacked: false };
@@ -1871,47 +1876,6 @@ function endMatch(winner) {
 
 // ---------------- Online multiplayer ----------------
 
-function renderOnlineLobby() {
-  const account = Net.getAccount();
-  const err = onlineStatus && onlineStatus.kind === 'error' ? onlineStatus.message : null;
-  app.innerHTML = `
-    ${header()}
-    <div class="screen">
-      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Jugar Online</h2></div>
-      <p class="hint">${account ? `Conectado como <strong>${escapeHtml(account.username)}</strong>` : 'Conectando al servidor…'}</p>
-      ${err ? `<p class="online-error">${err}</p>` : ''}
-      <button class="btn primary big" id="quick-match">⚡ Partida rápida</button>
-      <button class="btn" id="create-room">➕ Crear sala privada</button>
-      <div class="online-join-row">
-        <input id="join-code" class="join-code-input" placeholder="Código de sala" maxlength="5" autocapitalize="characters">
-        <button class="btn" id="join-room">Unirse</button>
-      </div>
-    </div>`;
-  document.getElementById('back').onclick = () => {
-    onlineIntent = null;
-    onlineStatus = null;
-    go('home');
-  };
-  document.getElementById('quick-match').onclick = () => {
-    onlineIntent = { mode: 'quick' };
-    go('heroSelect');
-  };
-  document.getElementById('create-room').onclick = () => {
-    onlineIntent = { mode: 'create' };
-    go('heroSelect');
-  };
-  document.getElementById('join-room').onclick = () => {
-    const input = document.getElementById('join-code');
-    const code = input.value.trim().toUpperCase();
-    if (!code) {
-      input.focus();
-      return;
-    }
-    onlineIntent = { mode: 'join', code };
-    go('heroSelect');
-  };
-}
-
 function renderOnlineWaiting() {
   const status = onlineStatus || { kind: 'connecting' };
   let message = 'Conectando…';
@@ -1919,13 +1883,14 @@ function renderOnlineWaiting() {
   else if (status.kind === 'creating') message = 'Creando sala…';
   else if (status.kind === 'waitingCode') message = 'Compartí este código con tu rival:';
   else if (status.kind === 'joining') message = 'Uniéndose a la sala…';
+  else if (status.kind === 'error') message = status.message;
 
   app.innerHTML = `
     ${header()}
     <div class="screen center online-waiting">
-      <div class="spinner"></div>
-      <p>${message}</p>
+      ${status.kind === 'error' ? `<p class="online-error">${escapeHtml(message)}</p>` : `<div class="spinner"></div><p>${message}</p>`}
       ${status.kind === 'waitingCode' ? `<div class="room-code">${status.code}</div>` : ''}
+      ${status.kind === 'error' ? '<button class="btn primary" id="retry-online">Reintentar</button>' : ''}
       <button class="btn" id="cancel-online">Cancelar</button>
     </div>`;
   document.getElementById('cancel-online').onclick = () => {
@@ -1934,9 +1899,18 @@ function renderOnlineWaiting() {
     onlineStatus = null;
     go('home');
   };
+  const retryBtn = document.getElementById('retry-online');
+  if (retryBtn) {
+    retryBtn.onclick = () => {
+      if (lastOnlineFaction) startOnlineMatch(lastOnlineFaction);
+    };
+  }
 }
 
+let lastOnlineFaction = null; // remembered so the connection-error retry button can replay the same attempt
+
 async function startOnlineMatch(faction) {
+  lastOnlineFaction = faction;
   const intent = onlineIntent;
   onlineStatus = { kind: 'connecting' };
   screen = 'onlineWaiting';
@@ -1945,9 +1919,7 @@ async function startOnlineMatch(faction) {
   try {
     await Net.connect();
   } catch {
-    onlineIntent = null;
     onlineStatus = { kind: 'error', message: 'No se pudo conectar con el servidor de partidas online. ¿Está corriendo?' };
-    screen = 'onlineLobby';
     render();
     return;
   }
@@ -2001,7 +1973,7 @@ function syncAccountToSave(account, seq) {
 function setupNetListeners() {
   Net.on('identified', (msg) => {
     syncAccountToSave(msg.account);
-    if (screen === 'onlineLobby' || screen === 'profile') render();
+    if (screen === 'profile') render();
   });
   Net.on('roomCreated', (msg) => {
     onlineStatus = { kind: 'waitingCode', code: msg.code };
@@ -2049,10 +2021,8 @@ function setupNetListeners() {
     showAiToast('Tu rival volvió a conectarse.');
   });
   Net.on('error', (msg) => {
-    if (screen === 'onlineLobby' || screen === 'onlineWaiting') {
-      onlineIntent = null;
+    if (screen === 'onlineWaiting') {
       onlineStatus = { kind: 'error', message: msg.message };
-      screen = 'onlineLobby';
       render();
     } else {
       showAiToast(msg.message);
@@ -2123,20 +2093,47 @@ function slotHtml(state, side, laneIndex, row, highlights) {
   const isNew = !prevOccupancy.has(occKey);
   const isSelected = side === 'p1' && selectedAttacker && selectedAttacker.laneIndex === laneIndex && selectedAttacker.row === row;
   const canAttackNow = side === 'p1' && creature.canAttack && !pendingPlacement && !pendingTarget && state.active === 'p1';
+
+  const atk = effectiveAtk(state, side, creature);
+  const ret = effectiveRetaliate(state, side, creature);
+  const life = effectiveLife(state, side, creature);
+  const maxLife = effectiveMaxLife(state, side, creature);
+  const atkClass = statBoostClass(atk, card.atk);
+  const retClass = statBoostClass(ret, card.retaliate);
+  // Life is compared against the current ceiling, not the raw number shown —
+  // otherwise a creature that's simply taken damage (completely normal)
+  // would get flagged the same as one actually debuffed by an aura.
+  const lifeClass = statBoostClass(maxLife, card.life);
+
   const tooltipLines = [
     `${card.name} — ${FACTIONS[card.faction].name}`,
     `Tipo: Criatura (${placementLabel(card.placement)})`,
-    `Ataque ${creature.atk} · Contraataque ${creature.retaliate} · Vida ${creature.life}`,
+    `Ataque ${atk} · Contraataque ${ret} · Vida ${life}`,
   ];
+  if (atkClass || retClass || lifeClass) {
+    tooltipLines.push(`(Base: Ataque ${card.atk} · Contraataque ${card.retaliate} · Vida ${card.life})`);
+  }
   if (card.text) tooltipLines.push(card.text);
+
+  // When this creature is selected and its only attack option is the enemy
+  // hero (its lane is clear), offer a tap target right on top of it instead
+  // of making the player reach across the board to the hero-face icon.
+  const showFaceAttackIcon = isSelected && highlights.face === 'p2';
 
   return `
     <div class="lane-slot occupied ${isHighlighted ? 'legal-target' : ''}" data-side="${side}" data-lane="${laneIndex}" data-row="${row}">
       <div class="board-card rarity-${card.rarity} ${canAttackNow ? 'can-attack' : ''} ${isSelected ? 'selected' : ''} ${isNew ? 'card-enter' : ''}" style="--rarity-color:${RARITY_COLORS[card.rarity]}" data-tooltip="${escapeAttr(tooltipLines.join('\n'))}">
         <div class="card-art small">${cardArtSVG(card)}</div>
-        <div class="card-stats"><span class="atk">${creature.atk}</span><span class="ret">${creature.retaliate}</span><span class="life">${creature.life}</span></div>
+        <div class="card-stats"><span class="atk ${atkClass}">${atk}</span><span class="ret ${retClass}">${ret}</span><span class="life ${lifeClass}">${life}</span></div>
       </div>
+      ${showFaceAttackIcon ? '<button class="face-attack-icon" data-tooltip="Atacar directo al héroe rival">⚔️</button>' : ''}
     </div>`;
+}
+
+function statBoostClass(effective, base) {
+  if (effective > base) return 'stat-buffed';
+  if (effective < base) return 'stat-nerfed';
+  return '';
 }
 
 function battlefieldHtml(state, highlights) {
@@ -2161,6 +2158,26 @@ function pileHtml(kind, icon, label, ids, side) {
     <div class="pile ${kind}" data-side="${side}" data-kind="${kind}" data-tooltip="${escapeAttr(pileTooltip(label, ids))}">
       <span class="pile-icon">${icon}</span>
       <span class="pile-count">${ids.length}</span>
+    </div>`;
+}
+
+function perkIndicatorHtml(state, side) {
+  const perk = getFactionPerk(state, side);
+  if (!perk) return '<div class="perk-indicator"></div>';
+  const count = countFieldCreatures(state[side]);
+  const status = perk.active ? 'Activo ahora.' : `Inactivo — tenés ${count}/4 criaturas en el campo.`;
+  const tooltip = `${perk.name}\n${perk.text}\n${status}`;
+  return `
+    <div class="perk-indicator ${perk.active ? 'active' : ''}" data-tooltip="${escapeAttr(tooltip)}">
+      <span class="perk-indicator-icon">${perk.icon}</span>
+    </div>`;
+}
+
+function perksSidebarHtml(state) {
+  return `
+    <div class="perks-sidebar">
+      ${perkIndicatorHtml(state, 'p2')}
+      ${perkIndicatorHtml(state, 'p1')}
     </div>`;
 }
 
@@ -2386,6 +2403,7 @@ function renderBattle() {
       <div class="battlefield-row">
         ${pilesHtml(state)}
         ${battlefieldHtml(state, highlights)}
+        ${perksSidebarHtml(state)}
         <button class="btn end-turn ${hasUnusedActions ? 'has-warning' : ''}" id="end-turn" data-tooltip="Fin de turno" ${isPlayerTurn && !pendingPlacement && !pendingTarget ? '' : 'disabled'}>
           ⏭️${hasUnusedActions ? '<span class="end-turn-warning-dot"></span>' : ''}
         </button>
@@ -2463,6 +2481,17 @@ function renderBattle() {
   });
   app.querySelectorAll('.hero-face').forEach((el) => {
     el.onclick = () => onFaceClick(el.dataset.side, el);
+  });
+  app.querySelectorAll('.face-attack-icon').forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      if (battle.active !== 'p1' || battle.winner || !selectedAttacker) return;
+      const attackerCreature = battle.p1.battlefield[selectedAttacker.laneIndex][selectedAttacker.row];
+      if (!attackerCreature) return;
+      const card = getCard(attackerCreature.cardId);
+      const options = getValidAttackTargets(battle, 'p1', selectedAttacker.laneIndex, card.placement);
+      if (options.some((o) => o.type === 'face')) resolveAttack(selectedAttacker, { type: 'face' });
+    };
   });
   app.querySelectorAll('.attr-pip[data-attr]').forEach((el) => {
     el.onclick = () => onLevelUp(el.dataset.attr);
@@ -3066,7 +3095,6 @@ function onForfeit() {
 export function render() {
   if (screen === 'home') renderHome();
   else if (screen === 'factionPick') renderFactionPick();
-  else if (screen === 'heroSelect') renderHeroSelect();
   else if (screen === 'deckSelect') renderDeckSelect();
   else if (screen === 'deckbuilder') renderDeckbuilder();
   else if (screen === 'collection') renderCollection();
@@ -3080,48 +3108,12 @@ export function render() {
   else if (screen === 'shop') renderShop();
   else if (screen === 'packOpen') renderPackOpen();
   else if (screen === 'reveal') renderReveal();
-  else if (screen === 'onlineLobby') renderOnlineLobby();
   else if (screen === 'onlineWaiting') renderOnlineWaiting();
   else if (screen === 'battle') renderBattle();
-  renderFloatingClaimIcons();
   wireTooltips();
   wireHeader();
   renderAttackArrows();
   if (screen !== 'battle') wireCardTilt();
-}
-
-// Global reminders (any screen except battle, to stay out of combat's way)
-// that something is waiting to be claimed — tap either to jump straight to
-// the section that has it.
-function renderFloatingClaimIcons() {
-  let layer = document.getElementById('floating-claims');
-  if (!layer) {
-    layer = document.createElement('div');
-    layer.id = 'floating-claims';
-    document.body.appendChild(layer);
-  }
-  if (screen === 'battle') {
-    layer.innerHTML = '';
-    return;
-  }
-  const missionsClaimable = Missions.countClaimable(save);
-  const spClaimable = SeasonPass.countClaimable(save);
-  layer.innerHTML = `
-    ${
-      missionsClaimable
-        ? `<button class="floating-claim left" id="floating-claim-missions" data-tooltip="Tenés misiones para reclamar">🎯<span class="floating-claim-badge">${missionsClaimable}</span></button>`
-        : ''
-    }
-    ${
-      spClaimable
-        ? `<button class="floating-claim right" id="floating-claim-season" data-tooltip="Tenés recompensas del pase para reclamar">🎫<span class="floating-claim-badge">${spClaimable}</span></button>`
-        : ''
-    }
-  `;
-  const missionsBtn = document.getElementById('floating-claim-missions');
-  if (missionsBtn) missionsBtn.onclick = () => go('missions');
-  const spBtn = document.getElementById('floating-claim-season');
-  if (spBtn) spBtn.onclick = () => go('seasonPass');
 }
 
 function renderAttackArrows() {

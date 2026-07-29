@@ -1,4 +1,5 @@
 import { getCard } from './cards.js';
+import { effectiveAtk, effectiveRetaliate, effectiveLife } from './factionPerks.js';
 
 const MAX_RESOURCE = 12;
 const HAND_LIMIT = 7;
@@ -227,27 +228,28 @@ export function moveCreature(state, side, fromLane, fromRow, toLane, toRow) {
 export function attack(state, side, laneIndex, row, target) {
   const p = state[side];
   const enemy = side === 'p1' ? state.p2 : state.p1;
+  const enemySide = side === 'p1' ? 'p2' : 'p1';
   const attacker = p.battlefield[laneIndex] && p.battlefield[laneIndex][row];
   if (!attacker || !attacker.canAttack) return { ok: false };
 
   attacker.canAttack = false;
 
   const attackerCard = getCard(attacker.cardId);
+  const atkValue = effectiveAtk(state, side, attacker);
   let attackerAbility = null;
   let defenderAbility = null;
 
   if (target.type === 'face') {
-    enemy.hp -= attacker.atk;
-    if (side === 'p1') state.stats.heroDamageDealt += attacker.atk;
+    enemy.hp -= atkValue;
+    if (side === 'p1') state.stats.heroDamageDealt += atkValue;
     attackerAbility = triggerCombatAbility(state, side, attacker);
   } else {
     const defender = enemy.battlefield[laneIndex][target.row];
     if (!defender) return { ok: false };
-    defender.life -= attacker.atk;
+    defender.life -= atkValue;
     attackerAbility = triggerCombatAbility(state, side, attacker);
-    if (defender.life > 0 && attackerCard.placement !== 'shooter') {
-      attacker.life -= defender.retaliate;
-      const enemySide = side === 'p1' ? 'p2' : 'p1';
+    if (effectiveLife(state, enemySide, defender) > 0 && attackerCard.placement !== 'shooter') {
+      attacker.life -= effectiveRetaliate(state, enemySide, defender);
       defenderAbility = triggerCombatAbility(state, enemySide, defender);
     }
   }
@@ -390,17 +392,27 @@ function applyEffect(state, side, effectId, target, value) {
   finishEffect();
 }
 
+// Runs to a fixed point (not just one pass) because a death can drop a
+// side below the 4-creature perk threshold, which retroactively lowers
+// effectiveLife for whatever else that perk was propping up — e.g. Terra
+// losing its +2 Vida aura can chain-kill an already-damaged ally the
+// instant the 4th creature dies.
 function cleanupBattlefield(state, actingSide) {
-  for (const side of ['p1', 'p2']) {
-    const p = state[side];
-    for (const lane of p.battlefield) {
-      for (const row of ['front', 'back']) {
-        const creature = lane[row];
-        if (creature && creature.life <= 0) {
-          p.discard.push(creature.cardId);
-          lane[row] = null;
-          if (actingSide === 'p1' && side === 'p2') {
-            state.stats.creaturesKilled += 1;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const side of ['p1', 'p2']) {
+      const p = state[side];
+      for (const lane of p.battlefield) {
+        for (const row of ['front', 'back']) {
+          const creature = lane[row];
+          if (creature && effectiveLife(state, side, creature) <= 0) {
+            p.discard.push(creature.cardId);
+            lane[row] = null;
+            if (actingSide === 'p1' && side === 'p2') {
+              state.stats.creaturesKilled += 1;
+            }
+            changed = true;
           }
         }
       }

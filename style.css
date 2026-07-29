@@ -27,60 +27,50 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-.floating-claim {
-  position: fixed;
-  z-index: 60;
-  width: 50px;
-  height: 50px;
+/* Reminders that something is waiting to be claimed (missions / season
+   pass). Live inside the topbar — which sits outside .screen's own
+   scrolling area (see #app below) and is never rendered on the battle
+   screen — instead of floating at a fixed viewport position, which used to
+   drift over whatever screen content happened to scroll underneath it. */
+.topbar-claim-btn {
+  position: relative;
+  flex-shrink: 0;
+  appearance: none;
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: 2px solid #ffb020;
   background: linear-gradient(135deg, #3d8bff, #6a4dff);
   color: #fff;
-  font-size: 22px;
+  font-size: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-  animation: floatingClaimPulse 1.8s ease-in-out infinite;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  animation: topbarClaimPulse 1.8s ease-in-out infinite;
 }
 
-.floating-claim.left {
-  /* Pinned to the edge of the centered "phone frame" (see the
-     min-width:600px block at the end of this file), not the raw browser
-     viewport edge — otherwise this floats alone in empty space on desktop,
-     far from the actual content column. */
-  left: calc(max(0px, (100vw - 480px) / 2) + 10px);
-  top: 35%;
-}
-
-.floating-claim.right {
-  /* Kept well clear of the home screen's missions side-tab, which sits
-     vertically centered on this same edge. */
-  right: calc(max(0px, (100vw - 480px) / 2) + 14px);
-  top: 80%;
-}
-
-.floating-claim-badge {
+.topbar-claim-badge {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  min-width: 20px;
-  height: 20px;
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
   border-radius: 999px;
   background: #ff5a5a;
   color: #fff;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 4px;
+  padding: 0 3px;
 }
 
-@keyframes floatingClaimPulse {
-  0%, 100% { box-shadow: 0 4px 16px rgba(0,0,0,0.4), 0 0 0 0 rgba(255,176,32,0.5); }
-  50% { box-shadow: 0 4px 16px rgba(0,0,0,0.4), 0 0 0 8px rgba(255,176,32,0); }
+@keyframes topbarClaimPulse {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.4), 0 0 0 0 rgba(255,176,32,0.5); }
+  50% { box-shadow: 0 2px 8px rgba(0,0,0,0.4), 0 0 0 6px rgba(255,176,32,0); }
 }
 
 #tooltip-layer {
@@ -601,8 +591,9 @@ html, body {
   position: fixed;
   top: 50%;
   /* Same "stick to the phone frame's edge, not the raw viewport edge" fix
-     as .floating-claim — otherwise this drifts off to the far right of a
-     wide desktop window, disconnected from the actual home screen content. */
+     used elsewhere in this file (e.g. .home-bottom-nav) — otherwise this
+     drifts off to the far right of a wide desktop window, disconnected
+     from the actual home screen content. */
   right: calc(max(0px, (100vw - 480px) / 2));
   transform: translateY(-50%);
   z-index: 55;
@@ -1432,6 +1423,15 @@ html, body {
   gap: 10px;
 }
 
+/* Grid items default to min-width:auto, which lets a card's intrinsic
+   content width (badges, unbreakable text) force its 1fr column wider
+   than the track — bleeding the rightmost column past the viewport edge
+   with no way to scroll to it. Overriding to 0 lets columns actually
+   shrink to their fair share. */
+.card-grid > * {
+  min-width: 0;
+}
+
 @media (min-width: 460px) {
   .card-grid { grid-template-columns: repeat(4, 1fr); }
 }
@@ -1639,6 +1639,12 @@ html, body {
 .ret::before { content: "↺"; margin-right: 2px; }
 .life::before { content: "❤"; margin-right: 2px; }
 
+/* A stat that differs from the card's printed value (a permanent
+   buff/debuff spell, or a faction perk aura) gets its own color so it
+   doesn't read as just another plain number next to the untouched ones. */
+.stat-buffed { color: #5ddb7f; text-shadow: 0 0 6px rgba(93, 219, 127, 0.5); }
+.stat-nerfed { color: #ff6b6b; text-shadow: 0 0 6px rgba(255, 107, 107, 0.5); }
+
 .req-badge {
   position: absolute;
   top: 4px;
@@ -1715,11 +1721,6 @@ html, body {
 .hero-card-special {
   font-size: 13px;
   margin-bottom: 6px;
-}
-
-.hero-card-deck {
-  font-size: 12px;
-  color: var(--text-dim);
 }
 
 .faction-list {
@@ -2164,7 +2165,8 @@ html, body {
 
 .btn.pack.theme-holy,
 .btn.pack.theme-fire,
-.btn.pack.theme-shadow {
+.btn.pack.theme-shadow,
+.btn.pack.theme-earth {
   border: 2px solid var(--theme-accent);
 }
 
@@ -2180,12 +2182,6 @@ html, body {
 .hint {
   color: var(--text-dim);
   font-size: 13px;
-}
-
-.online-join-row {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
 }
 
 .join-code-input {
@@ -2873,6 +2869,46 @@ html, body {
   color: var(--text-dim);
 }
 
+/* Mirrors .piles-sidebar's shape (two stacked halves, one per side) but on
+   the battlefield's right edge — each half is that side's faction perk,
+   dim/grayscale until its 4-creature threshold is met. */
+.perks-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 30px;
+  flex-shrink: 0;
+}
+
+.perk-indicator {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.38));
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(212, 175, 55, 0.12);
+  opacity: 0.35;
+  filter: grayscale(1);
+  transition: opacity 0.2s, filter 0.2s, box-shadow 0.2s;
+}
+
+.perk-indicator-icon {
+  font-size: 16px;
+}
+
+.perk-indicator.active {
+  opacity: 1;
+  filter: none;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(255, 176, 32, 0.6), 0 0 10px rgba(255, 176, 32, 0.45);
+  animation: perkIndicatorPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes perkIndicatorPulse {
+  0%, 100% { box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(255, 176, 32, 0.6), 0 0 10px rgba(255, 176, 32, 0.35); }
+  50% { box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(255, 176, 32, 0.9), 0 0 16px rgba(255, 176, 32, 0.65); }
+}
+
 .lanes-grid {
   flex: 1;
   min-height: 0;
@@ -3068,6 +3104,37 @@ html, body {
 
 .hero-face.hit-flash, .board-card.hit-flash {
   animation: hit-flash 0.3s ease;
+}
+
+/* Tapping the selected attacker's own card to swing at the enemy hero —
+   right next to the player's creatures, instead of forcing a reach across
+   the board to .hero-face — appears only when that creature's lane is
+   clear and hitting face is its only attack option (see slotHtml). */
+.face-attack-icon {
+  position: absolute;
+  z-index: 10;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  appearance: none;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid #ffb020;
+  background: linear-gradient(135deg, #d13a3a, #7a1414);
+  color: #fff;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  animation: faceAttackIconPulse 1s ease-in-out infinite;
+}
+
+@keyframes faceAttackIconPulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), 0 0 0 0 rgba(255, 176, 32, 0.6); }
+  50% { transform: translate(-50%, -50%) scale(1.12); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), 0 0 10px 4px rgba(255, 176, 32, 0.4); }
 }
 
 @keyframes card-enter {

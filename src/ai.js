@@ -1,6 +1,7 @@
 import { getCard, getHero } from './cards.js';
 import { getValidAttackTargets, getValidMoveTargets } from './battle.js';
 import { applyLevelUp, applySpecial, applyDeploy, applySpell, applyMove, applyAttack } from './actions.js';
+import { effectiveAtk, effectiveRetaliate, effectiveLife } from './factionPerks.js';
 
 function handCards(state, side) {
   return state[side].hand.map((cardId, idx) => ({ idx, cardId }));
@@ -43,7 +44,7 @@ function* castSpellsAndFortunesSteps(state, side) {
         const candidate = bestEnemyTarget(state, enemySide, card.value);
         if (candidate) {
           const creature = state[enemySide].battlefield[candidate.laneIndex][candidate.row];
-          if (creature.life <= (card.value || 0)) target = candidate;
+          if (effectiveLife(state, enemySide, creature) <= (card.value || 0)) target = candidate;
         }
       } else if (card.target === 'ally_creature') {
         target = card.effect.startsWith('heal_creature_') ? mostDamagedAllyTarget(state, side) : bestAllyTarget(state, side);
@@ -70,8 +71,10 @@ function bestEnemyTarget(state, enemySide, killValue) {
     for (const row of ['front', 'back']) {
       const creature = enemy.battlefield[laneIndex][row];
       if (!creature) continue;
-      let score = creature.atk * 2 + creature.life;
-      if (killValue !== undefined && creature.life <= killValue) score += 1000;
+      const atk = effectiveAtk(state, enemySide, creature);
+      const life = effectiveLife(state, enemySide, creature);
+      let score = atk * 2 + life;
+      if (killValue !== undefined && life <= killValue) score += 1000;
       if (score > bestScore) {
         bestScore = score;
         best = { side: enemySide, laneIndex, row };
@@ -89,8 +92,9 @@ function bestAllyTarget(state, side) {
     for (const row of ['front', 'back']) {
       const creature = p.battlefield[laneIndex][row];
       if (!creature) continue;
-      if (creature.atk > bestAtk) {
-        bestAtk = creature.atk;
+      const atk = effectiveAtk(state, side, creature);
+      if (atk > bestAtk) {
+        bestAtk = atk;
         best = { side, laneIndex, row };
       }
     }
@@ -172,13 +176,17 @@ function* runAttacksSteps(state, side) {
       const creatureOptions = options.filter((o) => o.type === 'creature');
       const enemyLane = state[enemySide].battlefield[laneIndex];
       const isShooter = card.placement === 'shooter';
+      const atk = effectiveAtk(state, side, creature);
+      const life = effectiveLife(state, side, creature);
 
       // Best case: a hit that kills the defender outright.
-      const killOption = creatureOptions.find((o) => enemyLane[o.row] && creature.atk >= enemyLane[o.row].life);
+      const killOption = creatureOptions.find(
+        (o) => enemyLane[o.row] && atk >= effectiveLife(state, enemySide, enemyLane[o.row])
+      );
       // Otherwise, only attack if it's safe — shooters never take retaliate,
       // melee/flyers only if they'd survive the defender's retaliate hit.
       const safeOption = creatureOptions.find(
-        (o) => enemyLane[o.row] && (isShooter || creature.life > enemyLane[o.row].retaliate)
+        (o) => enemyLane[o.row] && (isShooter || life > effectiveRetaliate(state, enemySide, enemyLane[o.row]))
       );
 
       let target = faceOption || killOption || safeOption;
