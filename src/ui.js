@@ -1671,8 +1671,6 @@ function renderShop() {
 
       ${welcomeOfferHtml}
       ${arenaOfferHtml}
-      ${draftBundleOfferHtml}
-      ${tournamentBundleOfferHtml}
 
       <h3>Entradas</h3>
       <p class="hint">Se consumen al entrar a la fila de Draft o Torneo, y se devuelven si cancelás antes de que empiece la partida.</p>
@@ -1684,6 +1682,8 @@ function renderShop() {
           <span>🏆 ${Tournament.TOURNAMENT_ENTRY_SKU.label}</span><span class="price">${Tournament.TOURNAMENT_ENTRY_SKU.priceLabel}</span>
         </button>
       </div>
+      ${draftBundleOfferHtml}
+      ${tournamentBundleOfferHtml}
 
       <h3>🗓️ Tienda del Día</h3>
       <p class="hint">Tres cartas al azar: común, rara y una premium (normalmente épica, rara vez legendaria). Se renuevan mañana.</p>

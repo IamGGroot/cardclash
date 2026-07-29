@@ -7,13 +7,13 @@ function bareSave() {
 }
 
 describe('ensureDailyDeals', () => {
-  test('always produces exactly 3 deals: common, rare, and a premium (epic or legendary) slot', () => {
+  test('always produces exactly 3 deals: common, rare, and a premium (epic/legendary/entry) slot', () => {
     const save = bareSave();
     const { deals } = ensureDailyDeals(save);
     assert.equal(deals.length, 3);
     assert.equal(deals[0].rarity, 'common');
     assert.equal(deals[1].rarity, 'rare');
-    assert.ok(['epic', 'legendary'].includes(deals[2].rarity));
+    assert.ok(['epic', 'legendary', 'entry'].includes(deals[2].rarity));
   });
 
   test('common and rare slots are always paid in coins; the premium slot always in gems', () => {
@@ -57,19 +57,19 @@ describe('buyDeal', () => {
     const { deals } = ensureDailyDeals(save);
     const deal = deals[0]; // common, coins
     const coinsBefore = save.coins;
-    const res = buyDeal(save, deal.cardId);
+    const res = buyDeal(save, deal.id);
     assert.equal(res.ok, true);
     assert.equal(save.coins, coinsBefore - deal.amount);
     assert.equal(save.collection[deal.cardId], 1);
-    assert.equal(isDealPurchased(save, deal.cardId), true);
+    assert.equal(isDealPurchased(save, deal.id), true);
   });
 
   test('cannot buy the same daily deal twice', () => {
     const save = bareSave();
     const { deals } = ensureDailyDeals(save);
     const deal = deals[0];
-    buyDeal(save, deal.cardId);
-    const res = buyDeal(save, deal.cardId);
+    buyDeal(save, deal.id);
+    const res = buyDeal(save, deal.id);
     assert.equal(res.ok, false);
     assert.equal(save.collection[deal.cardId], 1, 'must not grant a second copy');
   });
@@ -77,10 +77,20 @@ describe('buyDeal', () => {
   test('fails gracefully with insufficient balance and spends nothing', () => {
     const save = { coins: 0, gems: 0, collection: {} };
     const { deals } = ensureDailyDeals(save);
-    const res = buyDeal(save, deals[2].cardId); // premium slot
+    const res = buyDeal(save, deals[2].id); // premium slot
     assert.equal(res.ok, false);
     assert.equal(res.reason, 'balance');
     assert.equal(save.gems, 0);
+  });
+
+  test('a premium-slot entry deal grants a Draft/Torneo entry instead of a card', () => {
+    const save = bareSave();
+    ensureDailyDeals(save); // seeds save.dailyDeals with today's date
+    save.dailyDeals.deals[2] = { id: 'entry_draft', entryType: 'draft', rarity: 'entry', amount: 120, currency: 'gems' };
+    const res = buyDeal(save, 'entry_draft');
+    assert.equal(res.ok, true);
+    assert.equal(save.gems, 880);
+    assert.equal(save.draftEntries, 1);
   });
 
   test('buying a card id that is not one of today\'s deals fails', () => {

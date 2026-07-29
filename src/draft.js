@@ -23,7 +23,7 @@ export const DRAFT_ENTRY_SKU = { id: 'draft_entry', label: 'Entrada a Draft', pr
 // One-time bundle offer, same "persists until bought" shape as
 // WELCOME_OFFER/ARENA_OFFERS in economy.js — a real discount vs. buying 5
 // single entries (5 x $3.99 = $19.95).
-export const DRAFT_BUNDLE_SKU = { id: 'draft_bundle_5', label: '5 Entradas a Draft', entries: 5, priceLabel: '$12.00' };
+export const DRAFT_BUNDLE_SKU = { id: 'draft_bundle_5', label: '5 Entradas a Draft', entries: 5, priceLabel: '$9.99' };
 // vs. the normal 4 — see factionPerks.js's state.perkThreshold.
 export const DRAFT_PERK_THRESHOLD = 2;
 
