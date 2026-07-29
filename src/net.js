@@ -162,6 +162,21 @@ export function sendAction(action) {
   send({ type: 'action', action });
 }
 
+// ---- Draft mode ----
+
+export function queueDraft() {
+  send({ type: 'queueDraft', token: getToken() });
+}
+export function cancelDraftQueue() {
+  send({ type: 'cancelDraftQueue' });
+}
+export function pickDraftCard(cardId) {
+  send({ type: 'draftPick', cardId });
+}
+export function pickDraftHero(faction) {
+  send({ type: 'draftHeroPick', faction });
+}
+
 // ---- REST helpers (payments + account lookups outside a live match) ----
 
 export async function fetchAccount() {

@@ -44,7 +44,7 @@ export const FACTION_PERKS = {
   },
 };
 
-const ACTIVATION_THRESHOLD = 4;
+const DEFAULT_ACTIVATION_THRESHOLD = 4;
 
 export function countFieldCreatures(player) {
   let n = 0;
@@ -57,13 +57,16 @@ export function countFieldCreatures(player) {
 
 // The perk belonging to `side`'s hero (by faction), plus whether it's
 // currently active. Returns null for factions without a perk (neutral has
-// no hero, so it never reaches here in practice).
+// no hero, so it never reaches here in practice). The activation threshold
+// is normally 4, but battle.js's newGame can stamp a lower state.perkThreshold
+// onto the match (Draft mode plays it at 2 — see src/draft.js).
 export function getFactionPerk(state, side) {
   const p = state[side];
   const hero = getHero(p.heroId);
   const perk = hero && FACTION_PERKS[hero.faction];
   if (!perk) return null;
-  return { ...perk, active: countFieldCreatures(p) >= ACTIVATION_THRESHOLD };
+  const threshold = state.perkThreshold || DEFAULT_ACTIVATION_THRESHOLD;
+  return { ...perk, active: countFieldCreatures(p) >= threshold };
 }
 
 function applyPerkStat(mod, perk) {

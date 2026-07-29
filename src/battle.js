@@ -54,7 +54,10 @@ function nextId() {
   return 'inst' + uid++;
 }
 
-export function newGame(playerDeck, playerHeroId, aiDeck, aiHeroId) {
+// perkThreshold overrides factionPerks.js's default 4-creature activation
+// threshold for this match — Draft mode plays at 2 (see src/draft.js);
+// every other caller omits it and gets the normal threshold.
+export function newGame(playerDeck, playerHeroId, aiDeck, aiHeroId, { perkThreshold } = {}) {
   const state = {
     turn: 1,
     active: 'p1',
@@ -65,6 +68,7 @@ export function newGame(playerDeck, playerHeroId, aiDeck, aiHeroId) {
     // when the match ends — see cleanupBattlefield/attack/applyEffect below.
     stats: { heroDamageDealt: 0, creaturesKilled: 0, creaturesPlayed: 0 },
   };
+  if (perkThreshold) state.perkThreshold = perkThreshold;
   startTurn(state, 'p1');
   return state;
 }

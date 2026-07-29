@@ -30,6 +30,14 @@ import {
   tryReconnect,
   roomStats,
 } from './rooms.js';
+import {
+  queueDraftEntry,
+  cancelDraftQueue,
+  handleDraftPick,
+  handleDraftHeroPick,
+  handleDraftDisconnect,
+  draftStats,
+} from './draftPods.js';
 
 registerHeroes(HEROES);
 
@@ -87,7 +95,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
-      sendJson(res, 200, { ok: true, ...roomStats(), paymentsConfigured: webhookConfigured(), googleSignInConfigured: googleSignInConfigured() });
+      sendJson(res, 200, { ok: true, ...roomStats(), ...draftStats(), paymentsConfigured: webhookConfigured(), googleSignInConfigured: googleSignInConfigured() });
       return;
     }
 
@@ -275,12 +283,29 @@ wss.on('connection', (ws) => {
       case 'action':
         handleAction(ws, msg.action || {});
         break;
+      case 'queueDraft': {
+        const account = getOrCreateAccount(msg.token);
+        queueDraftEntry({ ws, token: account.token });
+        break;
+      }
+      case 'cancelDraftQueue':
+        cancelDraftQueue(ws);
+        break;
+      case 'draftPick':
+        handleDraftPick(ws, msg.cardId);
+        break;
+      case 'draftHeroPick':
+        handleDraftHeroPick(ws, msg.faction);
+        break;
       default:
         break;
     }
   });
 
-  ws.on('close', () => handleDisconnect(ws));
+  ws.on('close', () => {
+    handleDisconnect(ws);
+    handleDraftDisconnect(ws);
+  });
 });
 
 // Only auto-listen when run directly (`node index.js`) — tests import this

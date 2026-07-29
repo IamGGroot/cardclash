@@ -91,12 +91,12 @@ function attachPlayer(room, side, { ws, token, faction, deck, autoPlay }) {
   tokenToRoom.set(token, room.code);
 }
 
-function startMatch(room) {
+function startMatch(room, { perkThreshold } = {}) {
   const p1 = room.players.p1;
   const p2 = room.players.p2;
   const heroP1 = findHero(p1.faction);
   const heroP2 = findHero(p2.faction);
-  room.state = newGame(p1.deck, heroP1.id, p2.deck, heroP2.id);
+  room.state = newGame(p1.deck, heroP1.id, p2.deck, heroP2.id, { perkThreshold });
 
   for (const side of ['p1', 'p2']) {
     const player = room.players[side];
@@ -127,6 +127,22 @@ function findHero(faction) {
 let HEROES_BY_FACTION = {};
 export function registerHeroes(heroes) {
   HEROES_BY_FACTION = Object.fromEntries(heroes.map((h) => [h.faction, h]));
+}
+
+// Builds and starts a room directly from two already-known players, with no
+// WS-message-driven createRoom/joinRoom handshake — used by
+// server/draftPods.js to start each bracket match (semis/final) once the
+// pod already knows both players' decks and heroes. `onFinished(winnerSide,
+// room)` fires once, right as the room is torn down in endMatch(), so the
+// caller can chain into the next bracket stage or award prizes.
+export function startDirectMatch(playerA, playerB, { perkThreshold, quickMatch = false, onFinished } = {}) {
+  const code = generateCode();
+  const room = makeRoom(code, quickMatch);
+  if (onFinished) room.onFinished = onFinished;
+  attachPlayer(room, 'p1', playerA);
+  attachPlayer(room, 'p2', playerB);
+  startMatch(room, { perkThreshold });
+  return room;
 }
 
 export function createRoom({ ws, token, faction, deck, autoPlay }) {
@@ -232,6 +248,7 @@ function endMatch(room, winnerSide) {
     tokenToRoom.delete(player.token);
   }
   rooms.delete(room.code);
+  if (room.onFinished) room.onFinished(winnerSide, room);
 }
 
 function broadcastStep(room, step) {

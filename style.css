@@ -545,6 +545,12 @@ html, body {
   background: linear-gradient(180deg, #3d8bff, #6a4dff);
 }
 
+.play-menu-option.draft {
+  font-size: 13px;
+  color: var(--text);
+  background: linear-gradient(180deg, #a259ff, #6a2fbf);
+}
+
 .play-menu-icon {
   font-size: 18px;
 }
@@ -3405,6 +3411,53 @@ html, body {
 @keyframes warning-blink {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.25); opacity: 0.7; }
+}
+
+/* ---- Draft mode ---- */
+
+.draft-timer-bar {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.draft-timer-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold-dark), var(--gold));
+  transition: width 0.2s linear;
+}
+
+.draft-timer-fill.urgent {
+  background: linear-gradient(90deg, #a11c1c, #ff5a5a);
+  animation: warning-blink 0.6s ease-in-out infinite;
+}
+
+.draft-pack-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+@media (min-width: 420px) {
+  .draft-pack-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.draft-pick-card {
+  appearance: none;
+  cursor: pointer;
+  padding: 0;
+  border: none;
+  background: none;
+  transition: transform 0.15s;
+}
+
+.draft-pick-card:active {
+  transform: scale(0.94);
 }
 
 @media (min-width: 600px) {

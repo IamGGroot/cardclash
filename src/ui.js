@@ -21,6 +21,7 @@ import * as Missions from './missions.js';
 import * as DailyDeals from './dailyDeals.js';
 import * as SeasonPass from './seasonPass.js';
 import * as Ladder from './ladder.js';
+import * as Draft from './draft.js';
 import { sfx, vibrate, setSoundEnabled, isSoundEnabled, setHapticsEnabled, isHapticsEnabled } from './sound.js';
 import * as Net from './net.js';
 
@@ -33,7 +34,18 @@ let battle = null;
 let currentDeckFaction = null;
 let deckMode = 'normal'; // 'normal' | 'auto' — which deck set renderDeckSelect/renderDeckbuilder show
 let lastPackReveal = null;
+let revealReturnScreen = 'shop'; // where renderReveal's "Continuar" button goes — draft reveals redirect elsewhere
 let pendingPackId = null; // paid-for pack waiting to be dragged open
+
+// ---- Draft mode state (all transient — never persisted to `save`; the
+// server is the sole source of truth for an in-progress draft, same as
+// `battle` itself is for an in-progress online match) ----
+let draftPack = null; // current pack of full card objects offered to this seat, or null between packs
+let draftPickCount = 0;
+let draftQueueStatus = null; // { waiting, needed } while in the entry queue
+let draftPickDeadline = 0; // Date.now() timestamp the current pack's timer expires at, for the countdown bar
+let draftPicksSoFar = []; // full card objects picked so far this draft, oldest first — for the hero-pick faction hint
+let draftHeroChosen = false;
 
 let pendingPlacement = null; // { idx, card } while choosing a slot for a creature
 let pendingTarget = null; // { idx, card } while choosing a target for a spell/fortune
@@ -407,6 +419,10 @@ function renderHome() {
                <span class="play-menu-icon">🤖🌐</span>
                <span>Autodeckbuilder Online</span>
              </button>
+             <button class="play-menu-option draft" id="play-draft">
+               <span class="play-menu-icon">🎴</span>
+               <span>Draft — ${Draft.DRAFT_ENTRY_SKU.priceLabel}</span>
+             </button>
            </div>`
         : ''
     }
@@ -493,6 +509,13 @@ function renderHome() {
     playAutoOnlineBtn.onclick = () => {
       playMenuOpen = false;
       playSelectedDeck('online', true);
+    };
+  }
+  const playDraftBtn = document.getElementById('play-draft');
+  if (playDraftBtn) {
+    playDraftBtn.onclick = () => {
+      playMenuOpen = false;
+      go('draftEntry');
     };
   }
   document.getElementById('btn-pass-banner').onclick = () => go('seasonPass');
@@ -1770,6 +1793,7 @@ function openPendingPack(envelope) {
     persist();
     sfx.coin();
     lastPackReveal = cards;
+    revealReturnScreen = 'shop';
     pendingPackId = null;
     go('reveal');
   }, 420);
@@ -1846,7 +1870,161 @@ function renderReveal() {
       <div class="reveal-grid">${cardsHtml}</div>
       <button class="btn primary" id="continue">Continuar</button>
     </div>`;
-  document.getElementById('continue').onclick = () => go('shop');
+  document.getElementById('continue').onclick = () => go(revealReturnScreen);
+}
+
+// ---------------- Draft mode ----------------
+// 4 players pay to enter, pack-and-pass through 3 boosters each (+ a free
+// 16th neutral card), pick a hero, then the server runs a 3-match bracket
+// against their own pod using the exact same 1v1 engine/screens as any
+// other online match (renderBattle is entirely unmodified — see
+// server/draftPods.js for why). This section only covers the draft-specific
+// screens (entry, queue, picking, hero pick) and the prize reveal.
+
+function renderDraftEntry() {
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>🎴 Draft</h2></div>
+      <p class="hint">
+        Abrís 3 sobres de 5 cartas cada uno, elegís una y pasás el resto — al estilo draft. Al terminar te llevás una carta extra del Gremio Errante de regalo (16 en total) y jugás un mini torneo de 4 contra los otros jugadores del draft.
+        El 1° puesto se lleva un Sobre Premium + un Sobre de Bronce, el 2° un Sobre de Bronce, y el 3° y 4° una carta común de regalo por participar.
+      </p>
+      <div class="welcome-offer">
+        <div class="welcome-offer-badge">Entrada</div>
+        <h3>${Draft.DRAFT_ENTRY_SKU.label}</h3>
+        <button class="btn primary" id="draft-pay">Pagar ${Draft.DRAFT_ENTRY_SKU.priceLabel} y entrar</button>
+      </div>
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  document.getElementById('draft-pay').onclick = () => startDraftEntry();
+}
+
+async function startDraftEntry() {
+  draftQueueStatus = null;
+  draftPack = null;
+  draftPicksSoFar = [];
+  draftHeroChosen = false;
+  screen = 'draftWaiting';
+  render();
+  try {
+    await Net.connect();
+  } catch {
+    showToast('No se pudo conectar con el servidor de Draft.');
+    go('home');
+    return;
+  }
+  Net.queueDraft();
+}
+
+function renderDraftWaiting() {
+  const status = draftQueueStatus;
+  const message = status ? `Esperando jugadores… (${status.waiting}/${status.needed})` : 'Conectando…';
+  app.innerHTML = `
+    ${header()}
+    <div class="screen center online-waiting">
+      <div class="spinner"></div><p>${message}</p>
+      <button class="btn" id="cancel-draft">Cancelar</button>
+    </div>`;
+  document.getElementById('cancel-draft').onclick = () => {
+    Net.cancelDraftQueue();
+    go('home');
+  };
+}
+
+let draftTimerInterval = null;
+
+function armDraftTimerDisplay() {
+  clearInterval(draftTimerInterval);
+  const tick = () => {
+    const fill = document.getElementById('draft-timer-fill');
+    if (!fill) {
+      clearInterval(draftTimerInterval);
+      return;
+    }
+    const remaining = Math.max(0, draftPickDeadline - Date.now());
+    fill.style.width = `${(remaining / Draft.PICK_TIMER_MS) * 100}%`;
+    fill.classList.toggle('urgent', remaining < 5000);
+  };
+  tick();
+  draftTimerInterval = setInterval(tick, 200);
+}
+
+function renderDraftPick() {
+  if (!draftPack) {
+    app.innerHTML = `${header()}<div class="screen center"><div class="spinner"></div><p>Esperando el próximo sobre…</p></div>`;
+    return;
+  }
+  const cardsHtml = draftPack.map((card) => `<button class="draft-pick-card" data-pick-id="${card.id}">${cardVisual(card)}</button>`).join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen draft-pick-screen">
+      <div class="screen-header"><h2>Draft</h2></div>
+      <p class="hint">Elegí una carta — el resto pasa a tu vecino. Carta ${draftPickCount + 1}/${Draft.TOTAL_PICKS}</p>
+      <div class="draft-timer-bar"><div class="draft-timer-fill" id="draft-timer-fill"></div></div>
+      <div class="draft-pack-grid">${cardsHtml}</div>
+    </div>`;
+  app.querySelectorAll('[data-pick-id]').forEach((el) => {
+    el.onclick = () => {
+      if (!draftPack) return;
+      Net.pickDraftCard(el.dataset.pickId);
+      draftPack = null;
+      render();
+    };
+  });
+  armDraftTimerDisplay();
+}
+
+function renderDraftHeroPick() {
+  if (draftHeroChosen) {
+    app.innerHTML = `${header()}<div class="screen center"><div class="spinner"></div><p>Esperando a que el resto del pod elija su héroe…</p></div>`;
+    return;
+  }
+  const countByFaction = {};
+  for (const card of draftPicksSoFar) countByFaction[card.faction] = (countByFaction[card.faction] || 0) + 1;
+  const cardsHtml = HEROES.map((hero) => {
+    const faction = FACTIONS[hero.faction];
+    return `
+      <div class="hero-card theme-${faction.theme}" data-faction="${hero.faction}">
+        <div class="hero-card-faction">${faction.name} — ${countByFaction[hero.faction] || 0} carta${(countByFaction[hero.faction] || 0) === 1 ? '' : 's'} drafteada${(countByFaction[hero.faction] || 0) === 1 ? '' : 's'}</div>
+        <div class="hero-card-name">${hero.name}</div>
+        <div class="hero-card-tagline">${faction.tagline}</div>
+        <div class="hero-card-special"><strong>${hero.special.label}:</strong> ${hero.special.text}</div>
+      </div>`;
+  }).join('');
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><h2>Elegí tu héroe</h2></div>
+      <p class="hint">Tu mazo de draft mezcla lo que fuiste pickeando — elegí qué héroe te representa en el torneo (su especial y sus atributos, no tus cartas).</p>
+      <div class="hero-select-grid">${cardsHtml}</div>
+    </div>`;
+  app.querySelectorAll('.hero-card').forEach((el) => {
+    el.onclick = () => {
+      Net.pickDraftHero(el.dataset.faction);
+      draftHeroChosen = true;
+      render();
+    };
+  });
+}
+
+function draftPrizeReveal(prize) {
+  if (prize.commonCard) {
+    Store.addCardsToCollection(save, [prize.commonCard]);
+    persist();
+    lastPackReveal = [prize.commonCard];
+    revealReturnScreen = 'home';
+    showToast('🎖️ Premio de participación');
+    go('reveal');
+  } else if (prize.packs) {
+    const cards = prize.packs.flatMap((packId) => openPack(packId));
+    Store.addCardsToCollection(save, cards);
+    persist();
+    lastPackReveal = cards;
+    revealReturnScreen = 'home';
+    showToast('🏆 ¡Ganaste sobres de premio!');
+    go('reveal');
+  }
 }
 
 // ---------------- Match lifecycle ----------------
@@ -2139,6 +2317,34 @@ function setupNetListeners() {
       showAiToast(msg.message);
     }
   });
+
+  Net.on('draftQueued', (msg) => {
+    draftQueueStatus = { waiting: msg.waiting, needed: msg.needed };
+    if (screen === 'draftWaiting') render();
+  });
+  Net.on('draftUpdate', (msg) => {
+    draftPack = msg.pack;
+    draftPickCount = msg.pickCount;
+    draftPickDeadline = Date.now() + Draft.PICK_TIMER_MS;
+    screen = 'draftPick';
+    render();
+  });
+  Net.on('draftPickConfirmed', (msg) => {
+    Store.addCardsToCollection(save, [msg.card]);
+    draftPicksSoFar.push(msg.card);
+    persist();
+  });
+  Net.on('draftBonusCard', (msg) => {
+    lastPackReveal = [msg.card];
+    revealReturnScreen = 'draftHeroPick';
+    Store.addCardsToCollection(save, [msg.card]);
+    draftPicksSoFar.push(msg.card);
+    persist();
+    draftPack = null;
+    screen = 'reveal';
+    render();
+  });
+  Net.on('draftPrize', (msg) => draftPrizeReveal(msg.prize));
 }
 
 // ---------------- Battle screen ----------------
@@ -3303,6 +3509,10 @@ export function render() {
   else if (screen === 'packOpen') renderPackOpen();
   else if (screen === 'reveal') renderReveal();
   else if (screen === 'onlineWaiting') renderOnlineWaiting();
+  else if (screen === 'draftEntry') renderDraftEntry();
+  else if (screen === 'draftWaiting') renderDraftWaiting();
+  else if (screen === 'draftPick') renderDraftPick();
+  else if (screen === 'draftHeroPick') renderDraftHeroPick();
   else if (screen === 'battle') renderBattle();
   wireTooltips();
   wireHeader();

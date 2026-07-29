@@ -2,7 +2,9 @@ import { CARDS } from './cards.js';
 import { ARENAS } from './ladder.js';
 
 const WEIGHTS_COIN = { common: 72, rare: 22, epic: 5, legendary: 1 };
-const WEIGHTS_GEM = { common: 45, rare: 33, epic: 17, legendary: 5 };
+// Exported: src/draft.js reuses this same rarity distribution for draft
+// packs, since they're the same size/tier as the Sobre Premium.
+export const WEIGHTS_GEM = { common: 45, rare: 33, epic: 17, legendary: 5 };
 const WEIGHTS_LEGENDARY = { common: 15, rare: 35, epic: 35, legendary: 15 };
 
 export const PACKS = {
@@ -63,7 +65,7 @@ export const DUST_SKUS = [
   { id: 'dust_large', dust: 800, priceLabel: '$9.99' },
 ];
 
-function weightedPick(weights) {
+export function weightedPick(weights) {
   const total = Object.values(weights).reduce((a, b) => a + b, 0);
   let roll = Math.random() * total;
   for (const [rarity, w] of Object.entries(weights)) {
