@@ -14,6 +14,7 @@ import {
   endTurn,
 } from './battle.js';
 import { runAiTurnSteps } from './ai.js';
+import { runAutoDeckTurn } from './autoDeck.js';
 import { getFactionPerk, countFieldCreatures, effectiveAtk, effectiveRetaliate, effectiveLife, effectiveMaxLife } from './factionPerks.js';
 import { cardArtSVG, AVATARS } from './art.js';
 import * as Missions from './missions.js';
@@ -30,6 +31,7 @@ setHapticsEnabled(save.vibrationEnabled !== false);
 let screen = 'home';
 let battle = null;
 let currentDeckFaction = null;
+let deckMode = 'normal'; // 'normal' | 'auto' — which deck set renderDeckSelect/renderDeckbuilder show
 let lastPackReveal = null;
 let pendingPackId = null; // paid-for pack waiting to be dragged open
 
@@ -51,6 +53,7 @@ let playMenuOpen = false; // true while home shows the "vs IA / Online" popup un
 let topMenuOpen = false; // true while the shared topbar's ☰ dropdown (sound/haptics/tutorial) is open
 let aiToastEl = null;
 let aiToastHideTimer = null;
+let p1AutoPlay = false; // true while the player's own side is an Autodeckbuilder deck playing itself
 
 // ---- Online multiplayer state ----
 let onlineRoom = null; // { code } once a real match against another player is live
@@ -396,6 +399,14 @@ function renderHome() {
                <span class="play-menu-icon">🌐</span>
                <span>Jugar Online</span>
              </button>
+             <button class="play-menu-option auto" id="play-auto-ai">
+               <span class="play-menu-icon">🤖✨</span>
+               <span>Autodeckbuilder vs IA</span>
+             </button>
+             <button class="play-menu-option auto online" id="play-auto-online">
+               <span class="play-menu-icon">🤖🌐</span>
+               <span>Autodeckbuilder Online</span>
+             </button>
            </div>`
         : ''
     }
@@ -468,6 +479,20 @@ function renderHome() {
     playOnlineBtn.onclick = () => {
       playMenuOpen = false;
       playSelectedDeck('online');
+    };
+  }
+  const playAutoAiBtn = document.getElementById('play-auto-ai');
+  if (playAutoAiBtn) {
+    playAutoAiBtn.onclick = () => {
+      playMenuOpen = false;
+      playSelectedDeck('ai', true);
+    };
+  }
+  const playAutoOnlineBtn = document.getElementById('play-auto-online');
+  if (playAutoOnlineBtn) {
+    playAutoOnlineBtn.onclick = () => {
+      playMenuOpen = false;
+      playSelectedDeck('online', true);
     };
   }
   document.getElementById('btn-pass-banner').onclick = () => go('seasonPass');
@@ -1242,14 +1267,16 @@ function renderFactionPick() {
 }
 
 function renderDeckSelect() {
+  const deckKey = deckMode === 'auto' ? 'autoDecks' : 'decks';
+  const selectedField = deckMode === 'auto' ? 'selectedAutoFaction' : 'selectedFaction';
   const rows = Object.values(FACTIONS)
     .filter((faction) => HEROES.some((h) => h.faction === faction.id))
     .map((faction) => {
-      const count = Store.deckCount(save, faction.id);
+      const count = Store.deckCount(save, faction.id, deckKey);
       const complete = count === Store.CONSTANTS.DECK_SIZE;
       const pct = Math.min(100, Math.round((count / Store.CONSTANTS.DECK_SIZE) * 100));
       const hero = HEROES.find((h) => h.faction === faction.id);
-      const selected = save.selectedFaction === faction.id;
+      const selected = save[selectedField] === faction.id;
       const selectTooltip = !complete
         ? `Necesita ${Store.CONSTANTS.DECK_SIZE} cartas para poder jugarse`
         : selected
@@ -1280,10 +1307,27 @@ function renderDeckSelect() {
     ${header()}
     <div class="screen deck-select-screen">
       <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Mis Mazos</h2></div>
-      <p class="hint">Cada mazo necesita exactamente ${Store.CONSTANTS.DECK_SIZE} cartas (máximo ${Store.CONSTANTS.MAX_COPIES} copias de cada una) para poder jugar. Marcá ✓ el que querés usar — ese es el que se juega al tocar "Jugar".</p>
+      <div class="deck-mode-tabs">
+        <button class="deck-mode-tab ${deckMode === 'normal' ? 'active' : ''}" data-mode="normal">Normal</button>
+        <button class="deck-mode-tab ${deckMode === 'auto' ? 'active' : ''}" data-mode="auto">🤖 Auto</button>
+      </div>
+      <p class="hint">
+        ${
+          deckMode === 'auto'
+            ? 'Mazos para el modo Autodeckbuilder: se juegan solos, una carta por turno, sin elegir atributos a mano.'
+            : `Cada mazo necesita exactamente ${Store.CONSTANTS.DECK_SIZE} cartas (máximo ${Store.CONSTANTS.MAX_COPIES} copias de cada una) para poder jugar.`
+        }
+        Marcá ✓ el que querés usar — ese es el que se juega al tocar "Jugar".
+      </p>
       <div class="faction-list">${rows}</div>
     </div>`;
   document.getElementById('back').onclick = () => go('home');
+  app.querySelectorAll('[data-mode]').forEach((el) => {
+    el.onclick = () => {
+      deckMode = el.dataset.mode;
+      renderDeckSelect();
+    };
+  });
   app.querySelectorAll('[data-open-faction]').forEach((el) => {
     el.onclick = () => {
       currentDeckFaction = el.dataset.openFaction;
@@ -1294,11 +1338,11 @@ function renderDeckSelect() {
     el.onclick = (e) => {
       e.stopPropagation();
       const faction = el.dataset.selectFaction;
-      if (Store.deckCount(save, faction) !== Store.CONSTANTS.DECK_SIZE) {
+      if (Store.deckCount(save, faction, deckKey) !== Store.CONSTANTS.DECK_SIZE) {
         showToast(`Este mazo necesita ${Store.CONSTANTS.DECK_SIZE} cartas para poder seleccionarse.`);
         return;
       }
-      save.selectedFaction = faction;
+      save[selectedField] = faction;
       persist();
       renderDeckSelect();
     };
@@ -1307,7 +1351,8 @@ function renderDeckSelect() {
 
 function renderDeckbuilder() {
   const faction = currentDeckFaction;
-  const count = Store.deckCount(save, faction);
+  const deckKey = deckMode === 'auto' ? 'autoDecks' : 'decks';
+  const count = Store.deckCount(save, faction, deckKey);
   const pct = Math.min(100, Math.round((count / Store.CONSTANTS.DECK_SIZE) * 100));
   const complete = count === Store.CONSTANTS.DECK_SIZE;
 
@@ -1317,9 +1362,9 @@ function renderDeckbuilder() {
     const itemsHtml = ids
       .map((id) => {
         const card = getCard(id);
-        const inDeck = save.decks[faction][id] || 0;
+        const inDeck = save[deckKey][faction][id] || 0;
         const owned = save.collection[id];
-        const canAdd = Store.canAddToDeck(save, faction, id);
+        const canAdd = Store.canAddToDeck(save, faction, id, deckKey);
         return `
         <div class="collection-slot deck-slot">
           ${cardVisual(card, inDeck > 0 ? 'in-deck' : '')}
@@ -1348,7 +1393,7 @@ function renderDeckbuilder() {
   app.innerHTML = `
     ${header()}
     <div class="screen deck-select-screen">
-      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>${FACTIONS[faction].name}</h2></div>
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>${FACTIONS[faction].name}${deckMode === 'auto' ? ' 🤖' : ''}</h2></div>
       <div class="deck-progress">
         <div class="deck-progress-label">${count}/${Store.CONSTANTS.DECK_SIZE} cartas${complete ? ' · Mazo completo ✓' : ''}</div>
         <div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
@@ -1358,14 +1403,14 @@ function renderDeckbuilder() {
   document.getElementById('back').onclick = () => go('deckSelect');
   app.querySelectorAll('[data-action="add"]').forEach((btn) => {
     btn.onclick = () => {
-      Store.addToDeck(save, faction, btn.dataset.id);
+      Store.addToDeck(save, faction, btn.dataset.id, deckKey);
       persist();
       renderDeckbuilder();
     };
   });
   app.querySelectorAll('[data-action="remove"]').forEach((btn) => {
     btn.onclick = () => {
-      Store.removeFromDeck(save, faction, btn.dataset.id);
+      Store.removeFromDeck(save, faction, btn.dataset.id, deckKey);
       persist();
       renderDeckbuilder();
     };
@@ -1803,32 +1848,35 @@ function renderReveal() {
 // the first faction with a complete deck for a player who's never opened
 // that screen — every faction starts with a full starter deck, so a brand
 // new player can still hit the single home "Jugar" button immediately.
-function resolvePlayFaction() {
-  if (save.selectedFaction && Store.deckCount(save, save.selectedFaction) === Store.CONSTANTS.DECK_SIZE) {
-    return save.selectedFaction;
+function resolvePlayFaction(auto = false) {
+  const deckKey = auto ? 'autoDecks' : 'decks';
+  const selectedField = auto ? 'selectedAutoFaction' : 'selectedFaction';
+  if (save[selectedField] && Store.deckCount(save, save[selectedField], deckKey) === Store.CONSTANTS.DECK_SIZE) {
+    return save[selectedField];
   }
-  return Object.keys(FACTIONS).find((f) => f !== 'neutral' && Store.deckCount(save, f) === Store.CONSTANTS.DECK_SIZE) || null;
+  return Object.keys(FACTIONS).find((f) => f !== 'neutral' && Store.deckCount(save, f, deckKey) === Store.CONSTANTS.DECK_SIZE) || null;
 }
 
-// The home screen's "Jugar vs IA"/"Jugar Online" popup both resolve to
-// whichever deck is selected in "Mis Mazos" and skip hero-select entirely.
-function playSelectedDeck(mode) {
-  const faction = resolvePlayFaction();
+// The home screen's "Jugar vs IA"/"Jugar Online" popup (normal and 🤖 Auto
+// variants) all resolve to whichever deck is selected in "Mis Mazos" for
+// that mode and skip hero-select entirely.
+function playSelectedDeck(mode, auto = false) {
+  const faction = resolvePlayFaction(auto);
   if (!faction) {
-    showToast('Elegí un mazo completo en "Mis Mazos" antes de jugar.');
+    showToast(`Elegí un mazo${auto ? ' 🤖 Auto' : ''} completo en "Mis Mazos" antes de jugar.`);
     go('deckSelect');
     return;
   }
-  save.selectedFaction = faction;
+  save[auto ? 'selectedAutoFaction' : 'selectedFaction'] = faction;
   persist();
   if (mode === 'ai') {
-    startMatch(faction);
+    startMatch(faction, auto);
   } else if (mode === 'create') {
-    onlineIntent = { mode: 'create' };
-    startOnlineMatch(faction);
+    onlineIntent = { mode: 'create', auto };
+    startOnlineMatch(faction, auto);
   } else {
-    onlineIntent = { mode: 'quick' };
-    startOnlineMatch(faction);
+    onlineIntent = { mode: 'quick', auto };
+    startOnlineMatch(faction, auto);
   }
 }
 
@@ -1853,7 +1901,7 @@ function startGuidedTutorialMatch(faction) {
   startMatch(faction);
 }
 
-function startMatch(faction) {
+function startMatch(faction, auto = false) {
   // 'neutral' has no hero (see cards.js) — it must never be picked as the
   // AI's own faction, only mixed into decks as filler.
   const aiFactions = Object.keys(FACTIONS).filter((f) => f !== faction && f !== 'neutral');
@@ -1861,7 +1909,8 @@ function startMatch(faction) {
   const playerHero = HEROES.find((h) => h.faction === faction);
   const aiHero = HEROES.find((h) => h.faction === aiFaction);
   const aiDeck = Store.buildAiDeck(aiFaction);
-  battle = newGame(save.decks[faction], playerHero.id, aiDeck, aiHero.id);
+  const playerDeck = auto ? save.autoDecks[faction] : save.decks[faction];
+  battle = newGame(playerDeck, playerHero.id, aiDeck, aiHero.id);
   onlineRoom = null;
   prevOccupancy = new Set();
   selectedAttacker = null;
@@ -1871,7 +1920,9 @@ function startMatch(faction) {
   forfeitConfirmOpen = false;
   endTurnConfirmOpen = false;
   openPile = null;
+  p1AutoPlay = auto;
   go('battle');
+  if (auto) setTimeout(playAutoDeckTurn, 500);
 }
 
 function endMatch(winner) {
@@ -1886,6 +1937,7 @@ function endMatch(winner) {
   const trophyResult = pendingTrophyResult;
   pendingTrophyResult = null;
   onlineRoom = null;
+  p1AutoPlay = false;
   const won = winner === 'p1';
   const reward = matchReward(won);
   save.coins += reward.coins;
@@ -1946,15 +1998,23 @@ function renderOnlineWaiting() {
   const retryBtn = document.getElementById('retry-online');
   if (retryBtn) {
     retryBtn.onclick = () => {
-      if (lastOnlineFaction) startOnlineMatch(lastOnlineFaction);
+      if (lastOnlineFaction) startOnlineMatch(lastOnlineFaction, lastOnlineAuto);
     };
   }
 }
 
 let lastOnlineFaction = null; // remembered so the connection-error retry button can replay the same attempt
+let lastOnlineAuto = false;
 
-async function startOnlineMatch(faction) {
+async function startOnlineMatch(faction, auto = false) {
   lastOnlineFaction = faction;
+  lastOnlineAuto = auto;
+  // The client never drives its own turn when online — the server does
+  // (see server/rooms.js's runAutoPlayTurns) — but the UI still needs this
+  // to know to gray out the hand/hero controls instead of offering
+  // interactions that would just get rejected as "not your turn" once the
+  // server plays for you.
+  p1AutoPlay = auto;
   const intent = onlineIntent;
   onlineStatus = { kind: 'connecting' };
   screen = 'onlineWaiting';
@@ -1968,16 +2028,16 @@ async function startOnlineMatch(faction) {
     return;
   }
 
-  const deck = save.decks[faction];
+  const deck = auto ? save.autoDecks[faction] : save.decks[faction];
   if (intent.mode === 'quick') {
     onlineStatus = { kind: 'queued' };
-    Net.quickMatch(faction, deck);
+    Net.quickMatch(faction, deck, auto);
   } else if (intent.mode === 'create') {
     onlineStatus = { kind: 'creating' };
-    Net.createRoom(faction, deck);
+    Net.createRoom(faction, deck, auto);
   } else if (intent.mode === 'join') {
     onlineStatus = { kind: 'joining' };
-    Net.joinRoom(intent.code, faction, deck);
+    Net.joinRoom(intent.code, faction, deck, auto);
   }
   render();
 }
@@ -2136,7 +2196,7 @@ function slotHtml(state, side, laneIndex, row, highlights) {
   const occKey = `${side}:${laneIndex}:${row}:${creature.instanceId}`;
   const isNew = !prevOccupancy.has(occKey);
   const isSelected = side === 'p1' && selectedAttacker && selectedAttacker.laneIndex === laneIndex && selectedAttacker.row === row;
-  const canAttackNow = side === 'p1' && creature.canAttack && !pendingPlacement && !pendingTarget && state.active === 'p1';
+  const canAttackNow = side === 'p1' && creature.canAttack && !pendingPlacement && !pendingTarget && state.active === 'p1' && !p1AutoPlay;
 
   const atk = effectiveAtk(state, side, creature);
   const ret = effectiveRetaliate(state, side, creature);
@@ -2274,7 +2334,7 @@ function heroPanelHtml(state, side, highlights) {
   const faceHighlight = highlights.face === side ? 'legal-target' : '';
   const busy = pendingPlacement || pendingTarget;
 
-  const heroActionAvailable = state.active === 'p1' && !p.heroActionUsed && !busy;
+  const heroActionAvailable = state.active === 'p1' && !p.heroActionUsed && !busy && !p1AutoPlay;
   const attrRow = !isEnemy
     ? ['might', 'magic', 'destiny']
         .map((attr) => {
@@ -2305,13 +2365,14 @@ function handHtml(state) {
       const card = getCard(cardId);
       const attrValue = card.type === 'creature' ? state.p1.might : card.type === 'spell' ? state.p1.magic : state.p1.destiny;
       const isChosen = (pendingPlacement && pendingPlacement.idx === idx) || (pendingTarget && pendingTarget.idx === idx);
-      const playable = isPlayerTurn && card.cost <= state.p1.resource && attrValue >= card.requirement && (!pendingPlacement && !pendingTarget || isChosen);
+      const playable = isPlayerTurn && !p1AutoPlay && card.cost <= state.p1.resource && attrValue >= card.requirement && (!pendingPlacement && !pendingTarget || isChosen);
       return `<div class="hand-card ${playable ? 'playable' : 'unplayable'} ${isChosen ? 'chosen' : ''}" data-idx="${idx}">${cardVisual(card)}</div>`;
     })
     .join('');
 }
 
 function turnLabel(state) {
+  if (p1AutoPlay) return state.active === 'p1' ? '🤖 Jugando tu turno…' : 'Turno rival…';
   if (pendingPlacement) return 'Elegí una casilla';
   if (pendingTarget) return 'Elegí un objetivo';
   if (selectedAttacker) return 'Atacá o movete a otra casilla';
@@ -2437,7 +2498,7 @@ function renderBattle() {
   const state = battle;
   const isPlayerTurn = state.active === 'p1';
   const highlights = computeHighlights(state);
-  const hasUnusedActions = isPlayerTurn && (!state.p1.heroActionUsed || countReadyCreatures(state.p1) > 0);
+  const hasUnusedActions = isPlayerTurn && !p1AutoPlay && (!state.p1.heroActionUsed || countReadyCreatures(state.p1) > 0);
   const coachStep = tutorialCoachStepInfo(state);
 
   app.innerHTML = `
@@ -2448,7 +2509,7 @@ function renderBattle() {
         ${pilesHtml(state)}
         ${battlefieldHtml(state, highlights)}
         ${perksSidebarHtml(state)}
-        <button class="btn end-turn ${hasUnusedActions ? 'has-warning' : ''}" id="end-turn" data-tooltip="Fin de turno" ${isPlayerTurn && !pendingPlacement && !pendingTarget ? '' : 'disabled'}>
+        <button class="btn end-turn ${hasUnusedActions ? 'has-warning' : ''}" id="end-turn" data-tooltip="Fin de turno" ${isPlayerTurn && !pendingPlacement && !pendingTarget && !p1AutoPlay ? '' : 'disabled'}>
           ⏭️${hasUnusedActions ? '<span class="end-turn-warning-dot"></span>' : ''}
         </button>
       </div>
@@ -2529,7 +2590,7 @@ function renderBattle() {
   app.querySelectorAll('.face-attack-icon').forEach((el) => {
     el.onclick = (e) => {
       e.stopPropagation();
-      if (battle.active !== 'p1' || battle.winner || !selectedAttacker) return;
+      if (battle.active !== 'p1' || battle.winner || !selectedAttacker || p1AutoPlay) return;
       const attackerCreature = battle.p1.battlefield[selectedAttacker.laneIndex][selectedAttacker.row];
       if (!attackerCreature) return;
       const card = getCard(attackerCreature.cardId);
@@ -2605,7 +2666,7 @@ function onHandCardClick(idx) {
     suppressClick = false;
     return;
   }
-  if (battle.active !== 'p1' || battle.winner) return;
+  if (battle.active !== 'p1' || battle.winner || p1AutoPlay) return;
   if (pendingPlacement && pendingPlacement.idx === idx) {
     pendingPlacement = null;
     render();
@@ -2655,7 +2716,7 @@ const DRAG_THRESHOLD = 10;
 
 function wireHandCardDrag(el, idx) {
   el.addEventListener('pointerdown', (e) => {
-    if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+    if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget || p1AutoPlay) return;
     const cardId = battle.p1.hand[idx];
     const card = getCard(cardId);
     if (card.type !== 'creature') return;
@@ -2741,7 +2802,7 @@ function wireBoardCreatureDrag(el, laneIndex, row) {
     // unconditionally clears selectedAttacker (see onUp below) before the
     // icon's own click handler ever runs, so the tap silently does nothing.
     if (e.target.closest('.face-attack-icon')) return;
-    if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+    if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget || p1AutoPlay) return;
     const creature = battle.p1.battlefield[laneIndex][row];
     if (!creature || !creature.canAttack) return;
     const card = getCard(creature.cardId);
@@ -2867,7 +2928,7 @@ function resolveAttack(attackerPos, target) {
 }
 
 function onSlotClick(side, laneIndex, row, el) {
-  if (battle.active !== 'p1' || battle.winner) return;
+  if (battle.active !== 'p1' || battle.winner || p1AutoPlay) return;
 
   if (pendingPlacement) {
     if (side !== 'p1' || !isLegalPlacementSlot(pendingPlacement.card, laneIndex, row)) return;
@@ -2951,7 +3012,7 @@ function onSlotClick(side, laneIndex, row, el) {
 }
 
 function onFaceClick(side, el) {
-  if (battle.active !== 'p1' || battle.winner) return;
+  if (battle.active !== 'p1' || battle.winner || p1AutoPlay) return;
 
   if (pendingTarget) {
     if (side !== 'p2' || pendingTarget.card.target !== 'enemy_any') return;
@@ -2979,14 +3040,14 @@ function onFaceClick(side, el) {
 }
 
 function onLevelUp(attr) {
-  if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+  if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget || p1AutoPlay) return;
   if (isOnline()) Net.sendAction({ kind: 'levelUp', attr });
   else levelUpAttribute(battle, 'p1', attr);
   render();
 }
 
 function onUseSpecial() {
-  if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget) return;
+  if (battle.active !== 'p1' || battle.winner || pendingPlacement || pendingTarget || p1AutoPlay) return;
   const hero = getHero(battle.p1.heroId);
   if (hero.special.id === 'heal_hero_2') {
     spawnFloatingNumber(document.querySelector('.hero-panel.player .hero-face'), '+2', true);
@@ -2999,7 +3060,7 @@ function onUseSpecial() {
 }
 
 function onEndTurn() {
-  if (battle.active !== 'p1' || pendingPlacement || pendingTarget) return;
+  if (battle.active !== 'p1' || pendingPlacement || pendingTarget || p1AutoPlay) return;
 
   const heroActionPending = !battle.p1.heroActionUsed;
   const readyCreatures = countReadyCreatures(battle.p1);
@@ -3025,6 +3086,8 @@ function doEndTurn() {
   render();
   if (battle.active === 'p2' && !battle.winner) {
     setTimeout(playAiTurn, 500);
+  } else if (battle.active === 'p1' && !battle.winner && p1AutoPlay) {
+    setTimeout(playAutoDeckTurn, 500);
   }
 }
 
@@ -3142,6 +3205,36 @@ async function playAiTurn() {
   hideAiToast();
   if (!battle.winner) endTurn(battle);
   render();
+  // Autodeckbuilder vs IA: once the AI's turn ends, play is back on p1 —
+  // if that's an autoplaying deck, its turn has to be driven the same way
+  // the AI's was, since no human is going to tap anything. (playAiTurn only
+  // ever runs in a local match, so isOnline() is always false here in
+  // practice — checked anyway for the same reason as in playAutoDeckTurn.)
+  if (!battle.winner && !isOnline() && battle.active === 'p1' && p1AutoPlay) {
+    setTimeout(playAutoDeckTurn, 500);
+  }
+}
+
+// Plays the player's own side automatically for Autodeckbuilder — same
+// per-step engine calls as playAiTurn, just applied to 'p1' and capped at
+// one card via autoDeck.js instead of ai.js's unrestricted hand-dump.
+async function playAutoDeckTurn() {
+  if (battle.winner) return;
+  showAiToast('🤖 Autodeckbuilder jugando tu turno…');
+  await wait(AI_STEP_DELAY);
+  if (!battle.winner) runAutoDeckTurn(battle, 'p1');
+  hideAiToast();
+  if (!battle.winner) endTurn(battle);
+  render();
+  if (battle.winner || isOnline()) return;
+  // This whole client-side chain only drives a *local* p1 auto vs IA match
+  // — in an online match the server owns turn order for both sides (see
+  // server/autoPlay.js), so isOnline() bails out above instead of racing it.
+  if (battle.active === 'p2') {
+    setTimeout(playAiTurn, 500);
+  } else if (battle.active === 'p1' && p1AutoPlay) {
+    setTimeout(playAutoDeckTurn, 500);
+  }
 }
 
 function onForfeit() {

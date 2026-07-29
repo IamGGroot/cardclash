@@ -146,14 +146,14 @@ function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-export function createRoom(faction, deck) {
-  send({ type: 'createRoom', token: getToken(), faction, deck });
+export function createRoom(faction, deck, autoPlay = false) {
+  send({ type: 'createRoom', token: getToken(), faction, deck, autoPlay });
 }
-export function joinRoom(code, faction, deck) {
-  send({ type: 'joinRoom', token: getToken(), code, faction, deck });
+export function joinRoom(code, faction, deck, autoPlay = false) {
+  send({ type: 'joinRoom', token: getToken(), code, faction, deck, autoPlay });
 }
-export function quickMatch(faction, deck) {
-  send({ type: 'quickMatch', token: getToken(), faction, deck });
+export function quickMatch(faction, deck, autoPlay = false) {
+  send({ type: 'quickMatch', token: getToken(), faction, deck, autoPlay });
 }
 export function cancelQuickMatch() {
   send({ type: 'cancelQuickMatch' });

@@ -253,19 +253,19 @@ wss.on('connection', (ws) => {
     switch (msg.type) {
       case 'createRoom': {
         const account = getOrCreateAccount(msg.token);
-        const result = createRoom({ ws, token: account.token, faction: msg.faction, deck: msg.deck });
+        const result = createRoom({ ws, token: account.token, faction: msg.faction, deck: msg.deck, autoPlay: Boolean(msg.autoPlay) });
         if (result.error) ws.send(JSON.stringify({ type: 'error', message: result.error }));
         break;
       }
       case 'joinRoom': {
         const account = getOrCreateAccount(msg.token);
-        const result = joinRoom({ ws, token: account.token, code: msg.code, faction: msg.faction, deck: msg.deck });
+        const result = joinRoom({ ws, token: account.token, code: msg.code, faction: msg.faction, deck: msg.deck, autoPlay: Boolean(msg.autoPlay) });
         if (result.error) ws.send(JSON.stringify({ type: 'error', message: result.error }));
         break;
       }
       case 'quickMatch': {
         const account = getOrCreateAccount(msg.token);
-        const result = queueQuickMatch({ ws, token: account.token, faction: msg.faction, deck: msg.deck });
+        const result = queueQuickMatch({ ws, token: account.token, faction: msg.faction, deck: msg.deck, autoPlay: Boolean(msg.autoPlay) });
         if (result.error) ws.send(JSON.stringify({ type: 'error', message: result.error }));
         break;
       }

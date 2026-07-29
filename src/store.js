@@ -50,8 +50,10 @@ function autoDeckFrom(collection, faction) {
 function freshSave() {
   const collection = emptyCollection();
   const decks = {};
+  const autoDecks = {};
   for (const faction of Object.keys(FACTIONS)) {
     decks[faction] = {};
+    autoDecks[faction] = {};
   }
   return {
     coins: 300,
@@ -59,6 +61,7 @@ function freshSave() {
     dust: 0,
     collection,
     decks,
+    autoDecks,
   };
 }
 
@@ -86,8 +89,10 @@ export function load() {
     for (const card of CARDS) {
       if (!(card.id in parsed.collection)) parsed.collection[card.id] = 0;
     }
+    if (!parsed.autoDecks) parsed.autoDecks = {};
     for (const faction of Object.keys(FACTIONS)) {
       if (!parsed.decks[faction]) parsed.decks[faction] = {};
+      if (!parsed.autoDecks[faction]) parsed.autoDecks[faction] = {};
     }
     return parsed;
   } catch {
@@ -112,26 +117,29 @@ export function addCardsToCollection(state, cards) {
   }
 }
 
-export function deckCount(state, faction) {
-  return Object.values(state.decks[faction] || {}).reduce((a, b) => a + b, 0);
+// deckKey selects which deck set to read/write — 'decks' (default, the
+// normal manually-played deck) or 'autoDecks' (the Autodeckbuilder deck,
+// same collection, same 16-card/MAX_COPIES rules, just a separate build).
+export function deckCount(state, faction, deckKey = 'decks') {
+  return Object.values(state[deckKey][faction] || {}).reduce((a, b) => a + b, 0);
 }
 
-export function canAddToDeck(state, faction, cardId) {
-  const deck = state.decks[faction];
+export function canAddToDeck(state, faction, cardId, deckKey = 'decks') {
+  const deck = state[deckKey][faction];
   const inDeck = deck[cardId] || 0;
   const owned = state.collection[cardId] || 0;
-  return inDeck < owned && inDeck < MAX_COPIES && deckCount(state, faction) < DECK_SIZE;
+  return inDeck < owned && inDeck < MAX_COPIES && deckCount(state, faction, deckKey) < DECK_SIZE;
 }
 
-export function addToDeck(state, faction, cardId) {
-  if (!canAddToDeck(state, faction, cardId)) return false;
-  const deck = state.decks[faction];
+export function addToDeck(state, faction, cardId, deckKey = 'decks') {
+  if (!canAddToDeck(state, faction, cardId, deckKey)) return false;
+  const deck = state[deckKey][faction];
   deck[cardId] = (deck[cardId] || 0) + 1;
   return true;
 }
 
-export function removeFromDeck(state, faction, cardId) {
-  const deck = state.decks[faction];
+export function removeFromDeck(state, faction, cardId, deckKey = 'decks') {
+  const deck = state[deckKey][faction];
   const inDeck = deck[cardId] || 0;
   if (inDeck <= 0) return false;
   deck[cardId] = inDeck - 1;
@@ -146,12 +154,15 @@ export function disenchant(state, cardId) {
   const value = DUST_VALUE[card.rarity] || 0;
   state.collection[cardId] = owned - 1;
   state.dust = (state.dust || 0) + value;
-  // Keep any deck that referenced this card in sync with the new copy count.
-  for (const faction of Object.keys(state.decks)) {
-    const deck = state.decks[faction];
-    if ((deck[cardId] || 0) > state.collection[cardId]) {
-      deck[cardId] = state.collection[cardId];
-      if (deck[cardId] === 0) delete deck[cardId];
+  // Keep any deck (both deck sets) that referenced this card in sync with
+  // the new copy count.
+  for (const deckKey of ['decks', 'autoDecks']) {
+    for (const faction of Object.keys(state[deckKey] || {})) {
+      const deck = state[deckKey][faction];
+      if ((deck[cardId] || 0) > state.collection[cardId]) {
+        deck[cardId] = state.collection[cardId];
+        if (deck[cardId] === 0) delete deck[cardId];
+      }
     }
   }
   return { ok: true, dustGained: value };

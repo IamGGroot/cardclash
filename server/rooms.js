@@ -17,6 +17,7 @@ import {
   applyAttack,
   applyEndTurn,
 } from '../src/actions.js';
+import { runAutoDeckTurnSteps } from '../src/autoDeck.js';
 import { viewFor, mirrorStep } from './protocol.js';
 import { recordMatchResult, applyMatchTrophies, getOrCreateAccount } from './accounts.js';
 import { env } from './env.js';
@@ -84,8 +85,8 @@ function makeRoom(code, quickMatch) {
   return room;
 }
 
-function attachPlayer(room, side, { ws, token, faction, deck }) {
-  room.players[side] = { ws, token, faction, deck, disconnectTimer: null };
+function attachPlayer(room, side, { ws, token, faction, deck, autoPlay }) {
+  room.players[side] = { ws, token, faction, deck, autoPlay: Boolean(autoPlay), disconnectTimer: null };
   wsToPlayer.set(ws, { code: room.code, side });
   tokenToRoom.set(token, room.code);
 }
@@ -107,6 +108,10 @@ function startMatch(room) {
       state: viewFor(room.state, side),
     });
   }
+  // Fire-and-forget: newGame() always leaves p1 active, so if that side is
+  // an Autodeckbuilder deck its turn needs to start driving itself right
+  // away instead of waiting on an action that will never arrive.
+  runAutoPlayTurns(room);
 }
 
 function findHero(faction) {
@@ -124,21 +129,21 @@ export function registerHeroes(heroes) {
   HEROES_BY_FACTION = Object.fromEntries(heroes.map((h) => [h.faction, h]));
 }
 
-export function createRoom({ ws, token, faction, deck }) {
+export function createRoom({ ws, token, faction, deck, autoPlay }) {
   if (!validateDeck(deck, faction)) return { error: 'Mazo inválido.' };
   const code = generateCode();
   const room = makeRoom(code, false);
-  attachPlayer(room, 'p1', { ws, token, faction, deck });
+  attachPlayer(room, 'p1', { ws, token, faction, deck, autoPlay });
   send(ws, { type: 'roomCreated', code });
   return { code };
 }
 
-export function joinRoom({ ws, token, code, faction, deck }) {
+export function joinRoom({ ws, token, code, faction, deck, autoPlay }) {
   const room = rooms.get(String(code || '').toUpperCase());
   if (!room) return { error: 'No existe una sala con ese código.' };
   if (room.players.p2) return { error: 'Esa sala ya está completa.' };
   if (!validateDeck(deck, faction)) return { error: 'Mazo inválido.' };
-  attachPlayer(room, 'p2', { ws, token, faction, deck });
+  attachPlayer(room, 'p2', { ws, token, faction, deck, autoPlay });
   startMatch(room);
   return { code: room.code };
 }
@@ -184,14 +189,14 @@ function pairFromQueue() {
   }
 }
 
-export function queueQuickMatch({ ws, token, faction, deck }) {
+export function queueQuickMatch({ ws, token, faction, deck, autoPlay }) {
   if (!validateDeck(deck, faction)) return { error: 'Mazo inválido.' };
   // Drop any stale queue entry for this token (e.g. a reconnect/retry).
   const existingIdx = quickQueue.findIndex((q) => q.token === token);
   if (existingIdx !== -1) quickQueue.splice(existingIdx, 1);
 
   const trophies = getOrCreateAccount(token).trophies || 0;
-  quickQueue.push({ ws, token, faction, deck, trophies, queuedAt: Date.now() });
+  quickQueue.push({ ws, token, faction, deck, autoPlay, trophies, queuedAt: Date.now() });
   pairFromQueue();
   // Pairing may have already matched this exact entry above — only tell the
   // caller they're queued if they're still waiting.
@@ -234,6 +239,45 @@ function broadcastStep(room, step) {
     const player = room.players[side];
     if (!player) continue;
     send(player.ws, { type: 'step', step: mirrorStep(step, side), state: viewFor(room.state, side) });
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const AUTO_PLAY_STEP_DELAY_MS = Number(env('AUTO_PLAY_STEP_DELAY_MS', '900'));
+
+// Drives whichever side is currently active for as long as that side is an
+// Autodeckbuilder deck — one call covers both "one bot's turn, then hand
+// back to a human opponent" and "bot vs bot," since it just keeps looping
+// while the active side keeps being autoPlay. room.autoPlaying guards
+// against two overlapping invocations (e.g. one from startMatch, one from
+// handleAction's endTurn landing back to back) stepping on the same state.
+async function runAutoPlayTurns(room) {
+  if (room.autoPlaying) return;
+  room.autoPlaying = true;
+  try {
+    while (!room.finished && room.state && !room.state.winner) {
+      const side = room.state.active;
+      const player = room.players[side];
+      if (!player || !player.autoPlay) return;
+
+      for (const step of runAutoDeckTurnSteps(room.state, side)) {
+        broadcastStep(room, step);
+        if (room.state.winner) break;
+        await sleep(AUTO_PLAY_STEP_DELAY_MS);
+      }
+      if (room.state.winner) {
+        endMatch(room, room.state.winner);
+        return;
+      }
+      const endStep = applyEndTurn(room.state);
+      if (endStep) broadcastStep(room, endStep);
+      await sleep(AUTO_PLAY_STEP_DELAY_MS);
+    }
+  } finally {
+    room.autoPlaying = false;
   }
 }
 
@@ -309,6 +353,9 @@ export function handleAction(ws, action) {
 
   broadcastStep(room, step);
   if (state.winner) endMatch(room, state.winner);
+  // Whatever just happened may have handed the turn to an autoPlay side
+  // (most commonly: this was an endTurn) — no-ops immediately if not.
+  else runAutoPlayTurns(room);
 }
 
 function toCanonicalTarget(target, senderSide) {

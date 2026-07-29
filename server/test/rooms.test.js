@@ -13,6 +13,10 @@ process.env.DB_FILE = path.join(os.tmpdir(), `cardclash-rooms-test-${crypto.rand
 // doesn't play a match to completion (and just closes its sockets) doesn't
 // hold the test process open for the real 30s default.
 process.env.DISCONNECT_GRACE_MS = '200';
+// The Autodeckbuilder test below plays a whole match (dozens of steps) —
+// keep the server's between-step pacing near-zero instead of waiting out
+// the real (human-watchable) delay.
+process.env.AUTO_PLAY_STEP_DELAY_MS = '5';
 
 const { server, wss } = await import('../index.js');
 const { applyMatchTrophies } = await import('../accounts.js');
@@ -286,6 +290,38 @@ describe('room lifecycle over real WebSocket connections', () => {
     assert.equal(raced, 'timeout');
 
     a2.close();
+    b.close();
+  });
+
+  test('two Autodeckbuilder decks play a full match server-side with no client actions', async () => {
+    const a = await connect();
+    const b = await connect();
+    const identA = await identify(a, null);
+    const identB = await identify(b, null);
+
+    a.send(JSON.stringify({
+      type: 'createRoom', token: identA.account.token, faction: 'albura', deck: fullDeck('a'), autoPlay: true,
+    }));
+    const created = await nextMessage(a);
+    b.send(JSON.stringify({
+      type: 'joinRoom', token: identB.account.token, code: created.code, faction: 'terra', deck: fullDeck('t'), autoPlay: true,
+    }));
+
+    // Neither client ever sends an 'action' — the server has to drive both
+    // sides' turns on its own until someone wins (or the match hits the
+    // fatigue-death spiral, same as any other match).
+    const waitForMatchEnd = async (ws) => {
+      for (let i = 0; i < 2000; i++) {
+        const msg = await nextMessage(ws);
+        if (msg.type === 'matchEnd') return msg;
+      }
+      throw new Error('matchEnd never arrived within the message budget');
+    };
+    const [endA, endB] = await Promise.all([waitForMatchEnd(a), waitForMatchEnd(b)]);
+    assert.ok(endA.state.winner, 'the match should have reached a winner (or a draw) instead of hanging');
+    assert.ok(endB.state.winner, 'the match should have reached a winner (or a draw) instead of hanging');
+
+    a.close();
     b.close();
   });
 });

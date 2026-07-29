@@ -536,6 +536,10 @@ html, body {
   transform: scale(0.96);
 }
 
+.play-menu-option.auto {
+  font-size: 13px;
+}
+
 .play-menu-option.online {
   color: var(--text);
   background: linear-gradient(180deg, #3d8bff, #6a4dff);
@@ -1816,6 +1820,34 @@ html, body {
   opacity: 0.05;
   mix-blend-mode: overlay;
   pointer-events: none;
+}
+
+.deck-mode-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.deck-mode-tab {
+  flex: 1;
+  appearance: none;
+  cursor: pointer;
+  border: none;
+  border-radius: 9px;
+  padding: 9px 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-dim);
+  background: transparent;
+}
+
+.deck-mode-tab.active {
+  color: #2b1a02;
+  background: linear-gradient(180deg, var(--gold-light), var(--gold) 60%, var(--gold-dark));
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
 }
 
 .deck-row {

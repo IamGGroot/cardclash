@@ -7,7 +7,7 @@ function handCards(state, side) {
   return state[side].hand.map((cardId, idx) => ({ idx, cardId }));
 }
 
-function chooseHeroAction(state, side) {
+export function chooseHeroAction(state, side) {
   const p = state[side];
   const hand = state[side].hand.map((cardId) => ({ card: getCard(cardId) }));
   const needsMight = hand.some((h) => h.card.type === 'creature' && h.card.requirement > p.might);
@@ -22,7 +22,7 @@ function chooseHeroAction(state, side) {
   return applyLevelUp(state, side, 'might');
 }
 
-function* castSpellsAndFortunesSteps(state, side) {
+export function* castSpellsAndFortunesSteps(state, side) {
   const enemySide = side === 'p1' ? 'p2' : 'p1';
   let acted = true;
   while (acted) {
@@ -120,7 +120,7 @@ function mostDamagedAllyTarget(state, side) {
   return best;
 }
 
-function* deployCreaturesSteps(state, side) {
+export function* deployCreaturesSteps(state, side) {
   let acted = true;
   while (acted) {
     acted = false;
@@ -161,7 +161,7 @@ function tryReposition(state, side, laneIndex, row, card) {
   return applyMove(state, side, laneIndex, row, openLane.laneIndex, openLane.row);
 }
 
-function* runAttacksSteps(state, side) {
+export function* runAttacksSteps(state, side) {
   const p = state[side];
   const enemySide = side === 'p1' ? 'p2' : 'p1';
   for (let laneIndex = 0; laneIndex < p.battlefield.length; laneIndex++) {
@@ -210,24 +210,28 @@ function* runAttacksSteps(state, side) {
 
 // Drives one AI turn as a sequence of atomic, already-applied steps so the
 // caller can animate/pause between them instead of only seeing the end result.
-export function* runAiTurnSteps(state) {
-  const heroStep = chooseHeroAction(state, 'p2');
+// side defaults to 'p2' (the AI opponent) but every step above is genuinely
+// side-agnostic, so this doubles as a generic "play this side optimally for
+// one turn" bot — see autoDeck.js, which reuses the pieces above directly
+// with a per-turn card limit instead of calling this wrapper.
+export function* runAiTurnSteps(state, side = 'p2') {
+  const heroStep = chooseHeroAction(state, side);
   if (heroStep) yield heroStep;
   if (state.winner) return;
 
-  yield* castSpellsAndFortunesSteps(state, 'p2');
+  yield* castSpellsAndFortunesSteps(state, side);
   if (state.winner) return;
 
-  yield* deployCreaturesSteps(state, 'p2');
+  yield* deployCreaturesSteps(state, side);
   if (state.winner) return;
 
-  yield* runAttacksSteps(state, 'p2');
+  yield* runAttacksSteps(state, side);
 }
 
 // Convenience wrapper for callers (tests, non-UI contexts) that just want the
 // whole AI turn applied at once, without observing individual steps.
-export function runAiTurn(state) {
-  for (const _step of runAiTurnSteps(state)) {
+export function runAiTurn(state, side = 'p2') {
+  for (const _step of runAiTurnSteps(state, side)) {
     // draining the generator applies every step synchronously
   }
 }
