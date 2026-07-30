@@ -215,21 +215,23 @@ function header() {
         <span class="profile-chip-avatar">${avatarInnerHtml(save.avatar)}</span>
         <span class="profile-chip-name">${escapeHtml(save.username || 'Jugador')}</span>
       </button>
-      <div class="currency" data-tooltip="Monedas">🪙 ${save.coins}</div>
-      <div class="currency" data-tooltip="Gemas">💎 ${save.gems}</div>
-      <div class="currency" data-tooltip="Polvo desencantador">✨ ${save.dust || 0}</div>
-      <div class="currency" data-tooltip="Entradas a Draft">🎴 ${save.draftEntries || 0}</div>
-      <div class="currency" data-tooltip="Entradas a Torneo">🏆 ${save.tournamentEntries || 0}</div>
-      ${
-        missionsClaimable
-          ? `<button class="topbar-claim-btn" id="topbar-claim-missions" data-tooltip="Tenés misiones para reclamar">🎯<span class="topbar-claim-badge">${missionsClaimable}</span></button>`
-          : ''
-      }
-      ${
-        spClaimable
-          ? `<button class="topbar-claim-btn" id="topbar-claim-season" data-tooltip="Tenés recompensas del pase para reclamar">🎫<span class="topbar-claim-badge">${spClaimable}</span></button>`
-          : ''
-      }
+      <div class="topbar-scroll">
+        <div class="currency" data-tooltip="Monedas">🪙 ${save.coins}</div>
+        <div class="currency" data-tooltip="Gemas">💎 ${save.gems}</div>
+        <div class="currency" data-tooltip="Polvo desencantador">✨ ${save.dust || 0}</div>
+        <div class="currency" data-tooltip="Entradas a Draft">🎴 ${save.draftEntries || 0}</div>
+        <div class="currency" data-tooltip="Entradas a Torneo">🏆 ${save.tournamentEntries || 0}</div>
+        ${
+          missionsClaimable
+            ? `<button class="topbar-claim-btn" id="topbar-claim-missions" data-tooltip="Tenés misiones para reclamar">🎯<span class="topbar-claim-badge">${missionsClaimable}</span></button>`
+            : ''
+        }
+        ${
+          spClaimable
+            ? `<button class="topbar-claim-btn" id="topbar-claim-season" data-tooltip="Tenés recompensas del pase para reclamar">🎫<span class="topbar-claim-badge">${spClaimable}</span></button>`
+            : ''
+        }
+      </div>
       <div class="battle-menu-wrap" id="topbar-menu-wrap">
         <button class="battle-menu-btn" id="topbar-menu-btn">☰</button>
         ${

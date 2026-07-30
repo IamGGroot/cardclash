@@ -122,15 +122,34 @@ html, body {
   padding: 10px 14px;
   background: var(--bg-alt);
   border-bottom: 1px solid #2a3358;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.topbar::-webkit-scrollbar {
-  display: none;
+  /* No overflow rule here on purpose — setting overflow-x without
+     overflow-y implicitly turns overflow-y into "auto" too (a real CSS
+     quirk), which would clip the ☰ dropdown below since it overflows this
+     row vertically via position:absolute. Only .topbar-scroll (the
+     currency chips in the middle) scrolls horizontally; the profile chip
+     and ☰ menu stay outside it so they're never clipped or pushed
+     off-screen by however many currencies are showing. */
 }
 
 .topbar > * {
+  flex-shrink: 0;
+}
+
+.topbar-scroll {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.topbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.topbar-scroll > * {
   flex-shrink: 0;
 }
 
