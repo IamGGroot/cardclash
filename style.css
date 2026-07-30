@@ -2295,6 +2295,46 @@ html, body {
   color: var(--text-dim);
 }
 
+/* Mis Mazos' main call to action — centered and dressed up to match the
+   rest of the wood/gold premium screen instead of a generic full-width
+   .btn.primary. */
+.deck-edit-btn-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.deck-edit-btn {
+  appearance: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 32px;
+  border-radius: 999px;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #1a1400;
+  background: linear-gradient(180deg, var(--gold-light), var(--gold) 60%, var(--gold-dark));
+  border: 1px solid rgba(212, 175, 55, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 4px 16px -2px rgba(212, 175, 55, 0.55);
+}
+
+.deck-edit-btn-icon {
+  font-size: 18px;
+}
+
+.deck-edit-btn:active {
+  transform: scale(0.97);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 2px 8px -2px rgba(212, 175, 55, 0.4);
+}
+
 .faction-section-progress {
   margin-left: auto;
   font-size: 12px;

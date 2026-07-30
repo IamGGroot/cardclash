@@ -50,6 +50,8 @@ setHapticsEnabled(save.vibrationEnabled !== false);
 let screen = 'home';
 let battle = null;
 let deckMode = 'normal'; // 'normal' | 'auto' — which deck (save.deck / save.autoDeck) renderDeckSelect/renderDeckbuilder show
+let collectionFactionTab = 'all'; // 'all' or a faction id — which section renderCollection shows
+let deckbuilderFactionTab = 'all'; // same idea, for renderDeckbuilder
 let lastPackReveal = null;
 let revealReturnScreen = 'shop'; // where renderReveal's "Continuar" button goes — draft reveals redirect elsewhere
 let pendingPackId = null; // paid-for pack waiting to be dragged open
@@ -142,15 +144,6 @@ function go(next) {
   render();
 }
 
-// Missions/daily-deals both reset at UTC midnight (see todayStr() in
-// missions.js/dailyDeals.js) — this ticks a countdown to that instant and,
-// once it passes, re-renders so the reset is picked up without a reload.
-function msUntilNextUtcMidnight() {
-  const now = new Date();
-  const nextMidnightUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
-  return nextMidnightUtc - now.getTime();
-}
-
 function formatCountdown(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const h = String(Math.floor(total / 3600)).padStart(2, '0');
@@ -174,7 +167,7 @@ function startDailyResetTimer(elId, onExpire) {
       clearDailyResetTimer();
       return;
     }
-    const remaining = msUntilNextUtcMidnight();
+    const remaining = Missions.msUntilNextReset();
     if (remaining <= 0) {
       clearDailyResetTimer();
       onExpire();
@@ -495,7 +488,7 @@ function renderHome() {
             <button class="missions-widget-close" id="missions-widget-close" data-tooltip="Cerrar">✕</button>
           </div>
         </div>
-        ${widgetMissions.map((m) => missionRowHtml(m, true)).join('')}
+        <div id="missions-widget-rows">${widgetMissions.map((m) => missionRowHtml(m, true)).join('')}</div>
         <button class="btn" id="missions-widget-more">Ver todas →</button>
       </aside>
       <button class="missions-tab-handle" id="missions-tab-handle">
@@ -586,7 +579,7 @@ function renderHome() {
     setMissionsTabExpanded(false);
   };
   document.getElementById('missions-tab-scrim').onclick = () => setMissionsTabExpanded(false);
-  wireMissionClaimButtons(renderHome);
+  wireMissionClaimButtons(refreshHomeMissionsUI);
   startDailyResetTimer('missions-reset-timer', renderHome);
 }
 
@@ -643,6 +636,61 @@ function wireMissionClaimButtons(rerender) {
   });
 }
 
+// Updates just the bits of the home screen a mission claim (from the
+// floating widget) can change — the widget's own rows/badge, the tab
+// handle's badge, the bottom-nav badge, and the topbar's claim badge —
+// instead of a full renderHome(). None of the fixed-position elements
+// themselves (missions-tab-wrap, ad-watch-fab) get torn down and recreated,
+// so their entrance animations never replay.
+function refreshHomeMissionsUI() {
+  if (screen !== 'home') return;
+  rerenderHeader();
+
+  const claimable = totalMissionsClaimable();
+  const setBadge = (container, selector, text) => {
+    if (!container) return;
+    let badge = container.querySelector(selector);
+    const className = selector.slice(1);
+    if (text) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = className;
+        container.appendChild(badge);
+      }
+      badge.textContent = text;
+    } else if (badge) {
+      badge.remove();
+    }
+  };
+  setBadge(document.getElementById('btn-missions'), '.home-nav-badge', claimable || '');
+  setBadge(document.getElementById('missions-tab-handle'), '.badge-count', claimable || '');
+
+  const dailyClaimable = Missions.countClaimable(save);
+  const headerRight = document.querySelector('.missions-widget-header-right');
+  if (headerRight) {
+    let widgetBadge = headerRight.querySelector('.missions-widget-badge');
+    if (dailyClaimable) {
+      if (!widgetBadge) {
+        widgetBadge = document.createElement('span');
+        widgetBadge.className = 'missions-widget-badge';
+        headerRight.insertBefore(widgetBadge, document.getElementById('missions-widget-close'));
+      }
+      widgetBadge.textContent = `${dailyClaimable} para reclamar`;
+    } else if (widgetBadge) {
+      widgetBadge.remove();
+    }
+  }
+  const rowsContainer = document.getElementById('missions-widget-rows');
+  if (rowsContainer) {
+    rowsContainer.innerHTML = sortedMissionsForWidget()
+      .slice(0, 3)
+      .map((m) => missionRowHtml(m, true))
+      .join('');
+    wireMissionClaimButtons(refreshHomeMissionsUI);
+    wireTooltips(rowsContainer);
+  }
+}
+
 function missionProgressBarHtml(progress) {
   const pct = progress.target > 0 ? Math.round((progress.current / progress.target) * 100) : 0;
   const complete = progress.current >= progress.target;
@@ -651,29 +699,13 @@ function missionProgressBarHtml(progress) {
 
 function dailyMissionsTabHtml() {
   const overall = Missions.getOverallProgress(save);
-  const sections = Object.values(Missions.MISSION_CATEGORIES)
-    .map((cat) => {
-      const missions = Missions.MISSIONS.filter((m) => m.category === cat.id);
-      const progress = Missions.getCategoryProgress(save, cat.id);
-      return `
-        <div class="faction-section">
-          <div class="faction-section-header">
-            <h3>${cat.icon} ${cat.label}</h3>
-            <span class="faction-section-progress">${progress.current}/${progress.target}</span>
-          </div>
-          ${missionProgressBarHtml(progress)}
-          <div class="mission-group-gap"></div>
-          ${missions.map((m) => missionRowHtml(m)).join('')}
-        </div>`;
-    })
-    .join('');
   return `
-    <p class="hint">Se reinician todos los días. ¡Volvé mañana por más!</p>
+    <p class="hint">Se reinician cada 12 horas — ¡siempre hay algo nuevo para hacer!</p>
     <div class="deck-progress">
-      <div class="deck-progress-label">Progreso total del día · ${overall.current}/${overall.target}</div>
+      <div class="deck-progress-label">Progreso del ciclo · ${overall.current}/${overall.target}</div>
       ${missionProgressBarHtml(overall)}
     </div>
-    ${sections}`;
+    ${Missions.MISSIONS.map((m) => missionRowHtml(m)).join('')}`;
 }
 
 // One reward-and-progress row for a permanent achievement — visually the
@@ -1544,7 +1576,12 @@ function renderDeckSelect() {
         <div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
       </div>
       <p class="hint">🛡️🔥🌑⛰️ Tené 4 o más criaturas de una misma facción en juego para activar su bono — podés tener hasta dos bonos activos a la vez si mezclás facciones.</p>
-      <button class="btn primary" id="open-deckbuilder">✏️ Editar mazo</button>
+      <div class="deck-edit-btn-wrap">
+        <button class="deck-edit-btn" id="open-deckbuilder">
+          <span class="deck-edit-btn-icon">✏️</span>
+          <span>Editar mazo</span>
+        </button>
+      </div>
     </div>`;
   document.getElementById('back').onclick = () => go('home');
   app.querySelectorAll('[data-mode]').forEach((el) => {
@@ -1610,6 +1647,7 @@ function renderDeckbuilder() {
   };
 
   const sections = Object.values(FACTIONS)
+    .filter((faction) => deckbuilderFactionTab === 'all' || deckbuilderFactionTab === faction.id)
     .map((faction) => deckPoolSection(cardsForFaction(faction.id), faction))
     .join('');
 
@@ -1622,6 +1660,7 @@ function renderDeckbuilder() {
         <div class="deck-progress-bar"><div class="deck-progress-fill ${complete ? 'complete' : ''}" style="width:${pct}%"></div></div>
       </div>
       <button class="btn auto-build-btn" id="auto-build-deck" data-tooltip="Reemplaza este mazo por uno al azar con cartas que ya tenés">🎲 Autoconstruir mazo</button>
+      ${factionTabsHtml(deckbuilderFactionTab)}
       ${sections}
     </div>`;
   document.getElementById('back').onclick = () => go('deckSelect');
@@ -1631,6 +1670,12 @@ function renderDeckbuilder() {
     sfx.click();
     renderDeckbuilder();
   };
+  app.querySelectorAll('[data-faction-tab]').forEach((btn) => {
+    btn.onclick = () => {
+      deckbuilderFactionTab = btn.dataset.factionTab;
+      renderDeckbuilder();
+    };
+  });
   app.querySelectorAll('[data-action="add"]').forEach((btn) => {
     btn.onclick = () => {
       Store.addToDeck(save, btn.dataset.id, deckKey);
@@ -1647,6 +1692,20 @@ function renderDeckbuilder() {
   });
 }
 
+// Shared by Colección and the deckbuilder — a faction filter bar in the
+// same tab-pill style as the Misiones screen's category tabs.
+function factionTabsHtml(activeTab) {
+  const tabs = [{ id: 'all', icon: '🗂️', name: 'Todas' }, ...Object.values(FACTIONS)];
+  return `<div class="mission-tabs">${tabs
+    .map(
+      (f) => `
+      <button class="mission-tab ${activeTab === f.id ? 'active' : ''}" data-faction-tab="${f.id}">
+        ${f.id === 'all' ? f.icon : FACTION_PERKS[f.id]?.icon || '🃏'} ${f.id === 'all' ? f.name : f.name}
+      </button>`
+    )
+    .join('')}</div>`;
+}
+
 function renderCollection() {
   const totalOwned = CARDS.filter((c) => (save.collection[c.id] || 0) > 0).length;
   const totalPct = Math.round((totalOwned / CARDS.length) * 100);
@@ -1656,6 +1715,7 @@ function renderCollection() {
   }, 0);
 
   const sections = Object.values(FACTIONS)
+    .filter((faction) => collectionFactionTab === 'all' || collectionFactionTab === faction.id)
     .map((faction) => {
       const factionCards = cardsForFaction(faction.id);
       const factionOwned = factionCards.filter((c) => (save.collection[c.id] || 0) > 0).length;
@@ -1693,9 +1753,16 @@ function renderCollection() {
       <button class="btn auto-disenchant-btn" id="auto-disenchant" ${excessDust > 0 ? '' : 'disabled'} data-tooltip="Desencanta toda copia por encima de ${Store.CONSTANTS.MAX_COPIES} de cada carta">
         ✨ Desencantar excedentes${excessDust > 0 ? ` (+${excessDust})` : ''}
       </button>
+      ${factionTabsHtml(collectionFactionTab)}
       ${sections}
     </div>`;
   document.getElementById('back').onclick = () => go('home');
+  app.querySelectorAll('[data-faction-tab]').forEach((btn) => {
+    btn.onclick = () => {
+      collectionFactionTab = btn.dataset.factionTab;
+      renderCollection();
+    };
+  });
   document.getElementById('auto-disenchant').onclick = () => {
     const res = Store.disenchantExcess(save);
     if (res.cardsAffected > 0) {
@@ -4080,8 +4147,15 @@ export function init() {
   const seq = nextAccountSyncSeq();
   Net.fetchAccount()
     .then((account) => {
+      if (!account) return;
+      // Only worth a second full render if the server actually disagrees
+      // with what's already on screen (e.g. synced from another device) —
+      // otherwise this fired on every single app load and re-rendered home
+      // a moment after the first paint for no visible reason, replaying
+      // every entrance animation (topbar badges, missions tab, ad FAB).
+      const changed = account.username !== save.username || (account.trophies || 0) !== (save.trophies || 0);
       syncAccountToSave(account, seq);
-      if (screen === 'home' || screen === 'profile') render();
+      if (changed && (screen === 'home' || screen === 'profile')) render();
     })
     .catch(() => {});
 }

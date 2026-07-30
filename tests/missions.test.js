@@ -2,8 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MISSIONS,
-  MISSION_CATEGORIES,
   DIFFICULTY_WEIGHT,
+  RESET_INTERVAL_MS,
   ensureDailyMissions,
   getMissionProgress,
   isMissionComplete,
@@ -11,37 +11,42 @@ import {
   addMissionProgress,
   claimMission,
   countClaimable,
-  getCategoryProgress,
   getOverallProgress,
+  msUntilNextReset,
 } from '../src/missions.js';
 
 function bareSave() {
   return { coins: 0, gems: 0 };
 }
 
-describe('daily reset', () => {
-  test('a fresh save gets today\'s date with empty progress and no claims', () => {
+describe('12h reset cycle', () => {
+  test('a fresh save gets the current cycle id with empty progress and no claims', () => {
     const save = bareSave();
     const m = ensureDailyMissions(save);
-    assert.equal(m.date, new Date().toISOString().slice(0, 10));
+    assert.equal(m.cycle, Math.floor(Date.now() / RESET_INTERVAL_MS));
     assert.deepEqual(m.progress, {});
     assert.deepEqual(m.claimed, []);
   });
 
-  test('a stale date wipes progress and claims for the new day', () => {
-    const save = { ...bareSave(), missions: { date: '2000-01-01', progress: { battles: 5 }, claimed: ['play_1_match'] } };
+  test('a stale cycle wipes progress and claims for the new one', () => {
+    const save = { ...bareSave(), missions: { cycle: 1, progress: { battles: 5 }, claimed: ['play_1_match'] } };
     ensureDailyMissions(save);
-    assert.notEqual(save.missions.date, '2000-01-01');
+    assert.notEqual(save.missions.cycle, 1);
     assert.deepEqual(save.missions.progress, {});
     assert.deepEqual(save.missions.claimed, []);
   });
 
-  test('the same day is left untouched across repeated calls', () => {
+  test('the same cycle is left untouched across repeated calls', () => {
     const save = bareSave();
     ensureDailyMissions(save);
     addMissionProgress(save, 'battles', 1);
     ensureDailyMissions(save);
     assert.equal(save.missions.progress.battles, 1);
+  });
+
+  test('msUntilNextReset counts down within the current 12h window', () => {
+    const remaining = msUntilNextReset();
+    assert.ok(remaining > 0 && remaining <= RESET_INTERVAL_MS);
   });
 });
 
@@ -68,14 +73,6 @@ describe('progress tracking', () => {
     assert.equal(isMissionComplete(save, mission), false);
     addMissionProgress(save, mission.statKey, mission.target);
     assert.equal(isMissionComplete(save, mission), true);
-  });
-
-  test('two missions sharing a statKey both track off the same counter', () => {
-    const save = bareSave();
-    const shared = MISSIONS.filter((m) => m.statKey === 'packsOpened');
-    assert.ok(shared.length >= 2, 'expected multiple missions keyed on packsOpened');
-    addMissionProgress(save, 'packsOpened', 1);
-    assert.equal(isMissionComplete(save, shared[0]), true, 'the easier one should already be done');
   });
 });
 
@@ -136,66 +133,44 @@ describe('mission catalog sanity', () => {
     }
   });
 
-  test('every mission belongs to a known category', () => {
-    for (const m of MISSIONS) {
-      assert.ok(['combat', 'collection', 'economy'].includes(m.category), `${m.id} has unknown category`);
-    }
+  test('there are exactly 5 missions per cycle, no categories', () => {
+    assert.equal(MISSIONS.length, 5);
+    for (const m of MISSIONS) assert.equal('category' in m, false, `${m.id} should not have a category anymore`);
   });
 });
 
-describe('weighted progress bars', () => {
-  test('getCategoryProgress target equals the sum of that category\'s mission weights', () => {
-    const save = bareSave();
-    for (const cat of Object.keys(MISSION_CATEGORIES)) {
-      const missions = MISSIONS.filter((m) => m.category === cat);
-      const expectedTarget = missions.reduce((sum, m) => sum + DIFFICULTY_WEIGHT[m.difficulty], 0);
-      assert.equal(getCategoryProgress(save, cat).target, expectedTarget);
-    }
-  });
-
-  test('claiming a mission fills its category bar by that mission\'s difficulty weight', () => {
-    const save = bareSave();
-    const mission = MISSIONS.find((m) => m.category === 'combat');
-    const before = getCategoryProgress(save, 'combat').current;
-    addMissionProgress(save, mission.statKey, mission.target);
-    claimMission(save, mission.id);
-    const after = getCategoryProgress(save, 'combat').current;
-    assert.equal(after - before, DIFFICULTY_WEIGHT[mission.difficulty]);
-  });
-
-  test('completing but not claiming a mission does not move its category bar', () => {
-    const save = bareSave();
-    const mission = MISSIONS[0];
-    addMissionProgress(save, mission.statKey, mission.target);
-    assert.equal(isMissionComplete(save, mission), true);
-    assert.equal(getCategoryProgress(save, mission.category).current, 0);
-  });
-
-  test('a category with everything claimed reports current === target', () => {
-    const save = bareSave();
-    for (const m of MISSIONS.filter((m) => m.category === 'economy')) {
-      addMissionProgress(save, m.statKey, m.target);
-      claimMission(save, m.id);
-    }
-    const progress = getCategoryProgress(save, 'economy');
-    assert.equal(progress.current, progress.target);
-  });
-
-  test('getOverallProgress target equals the sum of every mission\'s weight, across all categories', () => {
+describe('weighted overall progress', () => {
+  test('getOverallProgress target equals the sum of every mission\'s weight', () => {
     const save = bareSave();
     const expectedTarget = MISSIONS.reduce((sum, m) => sum + DIFFICULTY_WEIGHT[m.difficulty], 0);
     assert.equal(getOverallProgress(save).target, expectedTarget);
   });
 
-  test('getOverallProgress current sums claimed weight across every category, not just one', () => {
+  test('claiming a mission fills the overall bar by that mission\'s difficulty weight', () => {
     const save = bareSave();
-    const fromEachCategory = Object.keys(MISSION_CATEGORIES).map((cat) => MISSIONS.find((m) => m.category === cat));
-    let expected = 0;
-    for (const m of fromEachCategory) {
+    const mission = MISSIONS[0];
+    const before = getOverallProgress(save).current;
+    addMissionProgress(save, mission.statKey, mission.target);
+    claimMission(save, mission.id);
+    const after = getOverallProgress(save).current;
+    assert.equal(after - before, DIFFICULTY_WEIGHT[mission.difficulty]);
+  });
+
+  test('completing but not claiming a mission does not move the overall bar', () => {
+    const save = bareSave();
+    const mission = MISSIONS[0];
+    addMissionProgress(save, mission.statKey, mission.target);
+    assert.equal(isMissionComplete(save, mission), true);
+    assert.equal(getOverallProgress(save).current, 0);
+  });
+
+  test('claiming everything reports current === target', () => {
+    const save = bareSave();
+    for (const m of MISSIONS) {
       addMissionProgress(save, m.statKey, m.target);
       claimMission(save, m.id);
-      expected += DIFFICULTY_WEIGHT[m.difficulty];
     }
-    assert.equal(getOverallProgress(save).current, expected);
+    const progress = getOverallProgress(save);
+    assert.equal(progress.current, progress.target);
   });
 });
