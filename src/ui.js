@@ -67,6 +67,22 @@ let draftPicksSoFar = []; // full card objects picked so far this draft, oldest 
 let draftHeroChosen = false;
 let tournamentQueueStatus = null; // { waiting, needed } while in the Torneo entry queue
 
+// ---- Bracket status (Draft + Torneo) ----
+// Neither mode has its own dedicated "here's what's happening in your pod"
+// screen — once a player is done with their own part (drafting/hero pick,
+// or just queueing for Torneo) they otherwise just see a bare "esperando"
+// spinner with zero visibility into the other 3 seats' semis/final. This
+// mirrors that state from the server's draftBracketUpdate/
+// tournamentBracketUpdate broadcasts (see server/draftPods.js and
+// server/tournamentPods.js) into a floating button + on-demand subscreen,
+// visible on any screen except an actual battle. `kind` distinguishes which
+// mode's prize/labels to show; cleared once the pod finishes (its final
+// broadcast already reflects the resolved final) after a short delay so the
+// result is still visible for a moment rather than vanishing instantly.
+let bracketStatus = null; // { kind: 'draft'|'tournament', seats, semis, final, startedAt }
+let bracketModalOpen = false;
+let bracketElapsedTimerId = null;
+
 let pendingPlacement = null; // { idx, card } while choosing a slot for a creature
 let pendingTarget = null; // { idx, card } while choosing a target for a spell/fortune
 let selectedAttacker = null; // { laneIndex, row } while choosing an attack target
@@ -385,6 +401,42 @@ function sortedMissionsForWidget() {
   });
 }
 
+// Every "one-time, persists until bought" offer the shop can currently
+// show, in the same order the shop screen itself lists them — drives the
+// floating home-screen buttons so a live offer is never just buried in
+// Tienda where the player might not think to look.
+function activeShopOffers() {
+  const offers = [];
+  if (!save.welcomeOfferClaimed) {
+    offers.push({ id: 'welcome', icon: '🎁', label: `${WELCOME_OFFER.label} — ${WELCOME_OFFER.priceLabel}` });
+  }
+  const arenaIdx = Ladder.getArenaIndex(save.trophies || 0);
+  if (arenaIdx > 0) {
+    const arena = Ladder.ARENAS[arenaIdx];
+    if (!(save.claimedArenaOffers || []).includes(arena.id)) {
+      const offer = getArenaOffer(arena.id);
+      if (offer) offers.push({ id: 'arena', icon: arena.icon || '🏆', label: `${offer.label} — ${offer.priceLabel}` });
+    }
+  }
+  if (!save.draftBundleClaimed) {
+    offers.push({ id: 'draft-bundle', icon: '🎴', label: `${Draft.DRAFT_BUNDLE_SKU.label} — ${Draft.DRAFT_BUNDLE_SKU.priceLabel}` });
+  }
+  if (!save.tournamentBundleClaimed) {
+    offers.push({ id: 'tournament-bundle', icon: '🏅', label: `${Tournament.TOURNAMENT_BUNDLE_SKU.label} — ${Tournament.TOURNAMENT_BUNDLE_SKU.priceLabel}` });
+  }
+  return offers;
+}
+
+function homeOfferFabsHtml(offers) {
+  return offers
+    .map((offer, i) => {
+      const side = i % 2 === 0 ? 'left' : 'right';
+      const stackIndex = Math.floor(i / 2);
+      return `<button class="home-offer-fab home-offer-fab-${side}" style="--stack-index:${stackIndex}" data-offer="${offer.id}" data-tooltip="${escapeHtml(offer.label)}">${offer.icon}</button>`;
+    })
+    .join('');
+}
+
 function renderHome() {
   Ladder.ensureLadderSave(save);
   const claimable = totalMissionsClaimable();
@@ -477,6 +529,8 @@ function renderHome() {
       : `Ya viste el máximo de ${AD_DAILY_LIMIT} anuncios de hoy — volvé mañana`
   }">📺</button>
 
+    ${homeOfferFabsHtml(activeShopOffers())}
+
     <div class="missions-tab-scrim ${missionsTabExpanded ? 'visible' : ''}" id="missions-tab-scrim"></div>
     <div class="missions-tab-wrap ${missionsTabExpanded ? 'expanded' : ''}" id="missions-tab-wrap">
       <aside class="missions-widget missions-tab-panel">
@@ -505,6 +559,9 @@ function renderHome() {
   document.getElementById('btn-missions').onclick = () => go('missions');
   document.getElementById('btn-league-strip').onclick = () => go('ladder');
   document.getElementById('home-watch-ad').onclick = () => watchAd('home');
+  document.querySelectorAll('[data-offer]').forEach((btn) => {
+    btn.onclick = () => go('shop');
+  });
   const backdrop = document.getElementById('play-menu-backdrop');
   if (backdrop) {
     backdrop.onclick = () => {
@@ -912,36 +969,66 @@ function renderSeasonPass() {
   const pct = Math.round((progress.current / progress.target) * 100);
   const days = SeasonPass.daysRemaining(save);
   const premiumUnlocked = SeasonPass.isPremiumUnlocked(save);
+  const maxLevel = level >= SeasonPass.CONSTANTS.MAX_LEVEL;
 
   const rowsHtml = SeasonPass.REWARDS.map(
     (entry) => `
-    <div class="sp-level-row ${entry.level <= level ? 'reached' : ''}">
-      <div class="sp-level-num">${entry.level}</div>
+    <div class="sp-level-row ${entry.level <= level ? 'reached' : ''} ${entry.level === level ? 'current' : ''}" ${entry.level === level ? 'id="sp-current-row"' : ''}>
+      <div class="sp-level-num">${entry.level === level ? '<span class="sp-current-dot"></span>' : ''}${entry.level}</div>
       ${seasonPassRewardHtml(entry, 'free')}
       ${seasonPassRewardHtml(entry, 'premium')}
     </div>`
   ).join('');
 
+  // A teaser of the next 3 premium-only rewards, shown on the unlock banner
+  // so "buy premium" has something concrete to sell instead of just a price.
+  const previewRewards = SeasonPass.REWARDS.filter((e) => e.level >= level)
+    .slice(0, 3)
+    .map((e) => {
+      const parts = [];
+      if (e.premium.coins) parts.push(`🪙${e.premium.coins}`);
+      if (e.premium.gems) parts.push(`💎${e.premium.gems}`);
+      if (e.premium.dust) parts.push(`✨${e.premium.dust}`);
+      if (e.premium.draftEntries) parts.push(`🎴${e.premium.draftEntries}`);
+      if (e.premium.tournamentEntries) parts.push(`🏆${e.premium.tournamentEntries}`);
+      return `<div class="sp-preview-chip"><span class="sp-preview-level">Nv.${e.level}</span>${parts.join(' ')}</div>`;
+    })
+    .join('');
+
   app.innerHTML = `
     ${header()}
-    <div class="screen">
+    <div class="screen season-pass-screen">
       <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>Pase de Temporada</h2></div>
-      <div class="sp-header">
-        <div class="sp-level-badge">Nivel ${level}</div>
-        <div class="deck-progress">
-          <div class="deck-progress-label">${progress.current}/${progress.target} XP · ${days} día${days === 1 ? '' : 's'} restante${days === 1 ? '' : 's'}</div>
-          <div class="deck-progress-bar"><div class="deck-progress-fill" style="width:${pct}%"></div></div>
+      <div class="sp-hero">
+        <div class="sp-hero-glow"></div>
+        <div class="sp-level-badge">
+          <span class="sp-level-badge-label">Nivel</span>
+          <span class="sp-level-badge-num">${maxLevel ? '★' : level}</span>
+        </div>
+        <div class="sp-hero-info">
+          <div class="deck-progress">
+            <div class="deck-progress-label">${maxLevel ? '¡Nivel máximo alcanzado!' : `${progress.current}/${progress.target} XP`}</div>
+            <div class="deck-progress-bar"><div class="deck-progress-fill" style="width:${pct}%"></div></div>
+          </div>
+          <div class="sp-days-pill">⏳ ${days} día${days === 1 ? '' : 's'} restante${days === 1 ? '' : 's'}</div>
         </div>
       </div>
       ${
         premiumUnlocked
           ? ''
-          : `<button class="btn primary big" id="unlock-premium">🎫 Desbloquear Pase Premium — ${SEASON_PASS_SKU.priceLabel}</button>`
+          : `<div class="welcome-offer sp-unlock-offer">
+              <div class="welcome-offer-badge">🎫 Pase Premium</div>
+              <h3>Desbloqueá la columna Premium</h3>
+              <div class="sp-preview-row">${previewRewards}</div>
+              <button class="btn primary" id="unlock-premium">Desbloquear por ${SEASON_PASS_SKU.priceLabel}</button>
+            </div>`
       }
-      <div class="sp-columns-label"><span>Nivel</span><span>Gratis</span><span>Premium</span></div>
+      <div class="sp-columns-label"><span>Nivel</span><span>🆓 Gratis</span><span>💎 Premium</span></div>
       <div class="sp-levels">${rowsHtml}</div>
     </div>`;
   document.getElementById('back').onclick = () => go('home');
+  const currentRow = document.getElementById('sp-current-row');
+  if (currentRow) currentRow.scrollIntoView({ block: 'center' });
   const unlockBtn = document.getElementById('unlock-premium');
   if (unlockBtn) {
     // Real-money only, same "compra simulada" mock-purchase convention as
@@ -2278,6 +2365,8 @@ async function startDraftEntry() {
   draftPack = null;
   draftPicksSoFar = [];
   draftHeroChosen = false;
+  bracketStatus = null;
+  bracketModalOpen = false;
   screen = 'draftWaiting';
   render();
   try {
@@ -2388,6 +2477,11 @@ function renderDraftHeroPick() {
 // Shared by Draft and Torneo — both award the same shape of prize
 // (packs and/or a consolation common card) via the same reveal screen.
 function bracketPrizeReveal(prize) {
+  // This seat's part in the bracket is over the moment its prize arrives
+  // (a semifinal loser gets theirs immediately; a finalist gets theirs once
+  // the final resolves) — nothing more to show in the status subscreen.
+  bracketStatus = null;
+  bracketModalOpen = false;
   if (prize.commonCard) {
     Store.addCardsToCollection(save, [prize.commonCard]);
     persist();
@@ -2423,6 +2517,8 @@ async function startTournamentEntry() {
   }
   const faction = resolvePlayHero(false);
   tournamentQueueStatus = null;
+  bracketStatus = null;
+  bracketModalOpen = false;
   screen = 'tournamentWaiting';
   render();
   try {
@@ -2793,6 +2889,7 @@ function setupNetListeners() {
     if (msg.prize?.packs?.includes('gem_pack')) Stats.bumpStat(save, 'draftsWon', 1);
     bracketPrizeReveal(msg.prize);
   });
+  Net.on('draftBracketUpdate', (msg) => onBracketUpdate('draft', msg));
 
   Net.on('tournamentQueued', (msg) => {
     tournamentQueueStatus = { waiting: msg.waiting, needed: msg.needed };
@@ -2803,6 +2900,18 @@ function setupNetListeners() {
     if (msg.prize?.packs?.includes('gem_pack')) Stats.bumpStat(save, 'tournamentsWon', 1);
     bracketPrizeReveal(msg.prize);
   });
+  Net.on('tournamentBracketUpdate', (msg) => onBracketUpdate('tournament', msg));
+}
+
+function onBracketUpdate(kind, msg) {
+  bracketStatus = {
+    kind,
+    seats: msg.seats,
+    semis: msg.semis,
+    final: msg.final,
+    startedAt: bracketStatus?.startedAt || Date.now(),
+  };
+  refreshBracketFab();
 }
 
 // ---------------- Battle screen ----------------
@@ -3991,7 +4100,124 @@ export function render() {
   wireTooltips();
   wireHeader();
   renderAttackArrows();
+  refreshBracketFab();
   if (screen !== 'battle') wireCardTilt();
+}
+
+// ---------------- Bracket status (Draft + Torneo) ----------------
+// Appended as a sibling of #app (like renderAttackArrows' SVG overlay) so it
+// survives every screen's full app.innerHTML replace instead of needing to
+// be re-declared inside each one — visible on any screen except an actual
+// battle, since that's the one place a player already has full context.
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function startBracketElapsedTimer() {
+  stopBracketElapsedTimer();
+  bracketElapsedTimerId = setInterval(() => {
+    const el = document.getElementById('bracket-status-fab-timer');
+    if (!el || !bracketStatus) {
+      stopBracketElapsedTimer();
+      return;
+    }
+    el.textContent = formatElapsed(Date.now() - bracketStatus.startedAt);
+  }, 1000);
+}
+
+function stopBracketElapsedTimer() {
+  if (bracketElapsedTimerId) {
+    clearInterval(bracketElapsedTimerId);
+    bracketElapsedTimerId = null;
+  }
+}
+
+function refreshBracketFab() {
+  const shouldShow = bracketStatus !== null && screen !== 'battle';
+  let fab = document.getElementById('bracket-status-fab');
+  if (!shouldShow) {
+    if (fab) fab.remove();
+    stopBracketElapsedTimer();
+    const modal = document.getElementById('bracket-status-modal');
+    if (modal) modal.remove();
+    return;
+  }
+  if (!fab) {
+    fab = document.createElement('button');
+    fab.id = 'bracket-status-fab';
+    fab.className = 'bracket-status-fab';
+    fab.onclick = () => {
+      bracketModalOpen = !bracketModalOpen;
+      refreshBracketFab();
+    };
+    document.body.appendChild(fab);
+    startBracketElapsedTimer();
+  }
+  const kindIcon = bracketStatus.kind === 'draft' ? '🎴' : '🏆';
+  fab.innerHTML = `${kindIcon}<span class="bracket-status-fab-timer" id="bracket-status-fab-timer">${formatElapsed(Date.now() - bracketStatus.startedAt)}</span>`;
+  renderBracketModal();
+}
+
+function bracketSeatLabel(seat) {
+  if (!seat) return '?';
+  return `${seat.isBot ? '🤖 ' : ''}${escapeHtml(seat.name)}`;
+}
+
+function bracketMatchRowHtml(label, match, seats) {
+  if (!match) {
+    return `
+      <div class="bracket-match pending">
+        <span class="bracket-match-label">${label}</span>
+        <span class="bracket-match-status">Por definir</span>
+      </div>`;
+  }
+  const [a, b] = match.players;
+  const status = match.winner == null ? 'En juego…' : `${bracketSeatLabel(seats[match.winner])} ganó`;
+  return `
+    <div class="bracket-match ${match.winner != null ? 'done' : 'live'}">
+      <span class="bracket-match-label">${label}</span>
+      <span class="bracket-match-players">${bracketSeatLabel(seats[a])} <em>vs</em> ${bracketSeatLabel(seats[b])}</span>
+      <span class="bracket-match-status">${status}</span>
+    </div>`;
+}
+
+function renderBracketModal() {
+  let modal = document.getElementById('bracket-status-modal');
+  if (!bracketModalOpen) {
+    if (modal) modal.remove();
+    return;
+  }
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'bracket-status-modal';
+    modal.className = 'bracket-status-modal';
+    document.body.appendChild(modal);
+  }
+  const { kind, seats, semis, final } = bracketStatus;
+  modal.innerHTML = `
+    <div class="bracket-status-backdrop" id="bracket-status-backdrop"></div>
+    <div class="bracket-status-panel">
+      <div class="bracket-status-header">
+        <h3>${kind === 'draft' ? '🎴 Estado del Draft' : '🏆 Estado del Torneo'}</h3>
+        <button class="bracket-status-close" id="bracket-status-close">✕</button>
+      </div>
+      <div class="bracket-status-seats">${seats.map((s) => `<div class="bracket-status-seat">${bracketSeatLabel(s)}</div>`).join('')}</div>
+      <div class="bracket-status-matches">
+        ${bracketMatchRowHtml('Semifinal 1', semis[0], seats)}
+        ${bracketMatchRowHtml('Semifinal 2', semis[1], seats)}
+        ${bracketMatchRowHtml('Final', final, seats)}
+      </div>
+    </div>`;
+  const close = () => {
+    bracketModalOpen = false;
+    refreshBracketFab();
+  };
+  document.getElementById('bracket-status-close').onclick = close;
+  document.getElementById('bracket-status-backdrop').onclick = close;
 }
 
 function renderAttackArrows() {

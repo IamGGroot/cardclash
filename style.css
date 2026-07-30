@@ -665,6 +665,179 @@ html, body {
   cursor: default;
 }
 
+/* One floating shortcut per still-available shop offer (welcome offer,
+   arena milestone, draft/tournament bundle) — alternates left/right,
+   stacking below the ad-watch-fab / missions-tab-wrap anchors already
+   pinned to those edges, so a live offer is never missed just because the
+   player never opens Tienda on their own. Appears/disappears on its own
+   as each render recomputes activeShopOffers(). */
+.home-offer-fab {
+  position: fixed;
+  top: calc(50% + 62px + (var(--stack-index, 0) * 56px));
+  z-index: 55;
+  appearance: none;
+  cursor: pointer;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid #ffe6ad;
+  background: linear-gradient(135deg, #ffb020, #ff7a3d);
+  color: #1a1400;
+  font-size: 19px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  animation: missions-tab-slide-in 0.5s ease-out 0.4s backwards, offerFabPulse 2.2s ease-in-out infinite;
+}
+
+.home-offer-fab-left {
+  left: calc(max(0px, (100vw - 480px) / 2) + 10px);
+}
+
+.home-offer-fab-right {
+  right: calc(max(0px, (100vw - 480px) / 2) + 10px);
+}
+
+@keyframes offerFabPulse {
+  0%, 100% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4), 0 0 0 0 rgba(255, 176, 32, 0.5); }
+  50% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4), 0 0 0 7px rgba(255, 176, 32, 0); }
+}
+
+/* Floating Draft/Torneo bracket status — visible on any screen except an
+   actual battle (see refreshBracketFab in ui.js), bottom corner so it never
+   competes with the ad/offer FABs already anchored at the vertical center. */
+.bracket-status-fab {
+  position: fixed;
+  bottom: 20px;
+  right: calc(max(0px, (100vw - 480px) / 2) + 16px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 2px solid #ffb020;
+  background: linear-gradient(165deg, #2f241a, #1b140f 65%);
+  color: var(--gold-light);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  appearance: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  animation: missions-tab-slide-in 0.4s ease-out backwards;
+}
+
+.bracket-status-fab-timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.bracket-status-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+}
+
+.bracket-status-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.bracket-status-panel {
+  position: relative;
+  max-width: 420px;
+  margin: 15vh auto 0;
+  background: var(--bg-alt);
+  border: 1px solid #2a3358;
+  border-radius: 16px;
+  padding: 18px;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+
+.bracket-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.bracket-status-header h3 {
+  margin: 0;
+}
+
+.bracket-status-close {
+  appearance: none;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.bracket-status-seats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.bracket-status-seat {
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid #2a3358;
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.bracket-match {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #2a3358;
+  background: var(--bg-alt);
+  margin-bottom: 8px;
+}
+
+.bracket-match.live {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.25);
+}
+
+.bracket-match.done {
+  opacity: 0.7;
+}
+
+.bracket-match-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  font-weight: 700;
+}
+
+.bracket-match-players {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bracket-match-players em {
+  font-style: normal;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.bracket-match-status {
+  font-size: 12px;
+  color: var(--gold-light);
+}
+
 .btn.ad:disabled {
   opacity: 0.4;
   cursor: default;
@@ -1020,27 +1193,131 @@ html, body {
   background: none;
 }
 
-.sp-header {
+/* Season Pass screen: reuses the same wood-table backdrop already
+   established for home/deckSelect/tutorial so it reads as one premium
+   "shop-tier" family instead of a plain list screen. */
+.season-pass-screen {
+  position: relative;
+  background:
+    radial-gradient(ellipse 120% 45% at 50% 0%, rgba(255, 200, 130, 0.07), transparent 60%),
+    linear-gradient(180deg, var(--wood-mid) 0%, var(--wood-dark) 55%, #0c0806 100%);
+}
+
+.season-pass-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--grain);
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+.sp-hero {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: 14px;
+  margin-bottom: 16px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  background: linear-gradient(160deg, rgba(255, 176, 32, 0.14), rgba(255, 176, 32, 0.02));
+  overflow: hidden;
+}
+
+.sp-hero-glow {
+  position: absolute;
+  top: -60%;
+  left: -20%;
+  width: 220px;
+  height: 220px;
+  background: radial-gradient(circle, rgba(255, 200, 130, 0.25), transparent 70%);
+  pointer-events: none;
 }
 
 .sp-level-badge {
+  position: relative;
   flex-shrink: 0;
-  background: linear-gradient(135deg, #ffb020, #ff7a3d);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffd77a, #ffb020 55%, #d9760f 100%);
+  border: 3px solid #ffe6ad;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(255, 140, 0, 0.35);
   color: #1a1400;
+}
+
+.sp-level-badge-label {
+  font-size: 9px;
   font-weight: 700;
-  font-size: 13px;
-  padding: 8px 14px;
-  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+.sp-level-badge-num {
+  font-family: var(--font-display, inherit);
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.sp-hero-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.sp-hero-info .deck-progress {
+  margin-bottom: 8px;
+}
+
+.sp-days-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gold-light);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 176, 32, 0.3);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+.sp-unlock-offer {
+  padding-top: 22px;
+}
+
+.sp-preview-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.sp-preview-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 176, 32, 0.3);
+  border-radius: 10px;
+  padding: 6px 10px;
   white-space: nowrap;
 }
 
-.sp-header .deck-progress {
-  flex: 1;
-  margin-bottom: 0;
+.sp-preview-level {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold-light);
+  text-transform: uppercase;
 }
 
 .sp-columns-label {
@@ -1075,17 +1352,48 @@ html, body {
   padding: 8px;
   background: var(--bg-alt);
   opacity: 0.55;
+  transition: opacity 0.2s ease;
 }
 
 .sp-level-row.reached {
   opacity: 1;
 }
 
+.sp-level-row.current {
+  opacity: 1;
+  border-color: var(--gold);
+  background: linear-gradient(90deg, rgba(212, 175, 55, 0.14), var(--bg-alt) 60%);
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.3), 0 0 14px rgba(212, 175, 55, 0.15);
+}
+
 .sp-level-num {
+  position: relative;
   text-align: center;
   font-weight: 700;
   font-size: 13px;
   color: var(--text-dim);
+}
+
+.sp-level-row.current .sp-level-num {
+  color: var(--gold-light);
+}
+
+.sp-current-dot {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.25);
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .sp-reward {
@@ -1098,7 +1406,8 @@ html, body {
 }
 
 .sp-reward.premium {
-  background: rgba(255, 176, 32, 0.08);
+  background: rgba(255, 176, 32, 0.1);
+  border: 1px solid rgba(255, 176, 32, 0.18);
 }
 
 .sp-reward.claimed {

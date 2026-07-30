@@ -4,13 +4,29 @@
 // 1v1 engine as any other online match (via rooms.js's startDirectMatch —
 // see that file for why the bracket doesn't need its own battle protocol).
 // Parallel to server/rooms.js, not a modification of it.
+import crypto from 'node:crypto';
 import { getCard, HEROES } from '../src/cards.js';
 import * as Draft from '../src/draft.js';
-import { startDirectMatch } from './rooms.js';
+import { startDirectMatch, randomBotName, displayNameFor } from './rooms.js';
 import { env } from './env.js';
 
 const PICK_TIMER_MS = Number(env('DRAFT_PICK_TIMER_MS', String(Draft.PICK_TIMER_MS)));
 const HERO_FACTIONS = new Set(HEROES.map((h) => h.faction));
+
+// Same "wait a bit for real opponents, then fall back to bots" shape as
+// Quick Match's QUICK_MATCH_BOT_TIMEOUT_MS in rooms.js — a lone (or
+// short-handed) draft queue fills its remaining seats with bots instead of
+// leaving the player waiting on 3 more strangers indefinitely.
+const POD_BOT_TIMEOUT_MS = Number(env('DRAFT_POD_BOT_TIMEOUT_MS', '5000'));
+// Bots "think" between picks like a real drafter skimming the pack, not an
+// instant script — reuses the same randomized-delay feel as the Quick Match
+// bot's BOT_STEP_DELAY_MIN_MS/MAX_MS in rooms.js.
+const BOT_PICK_DELAY_MIN_MS = Number(env('BOT_PICK_DELAY_MIN_MS', '900'));
+const BOT_PICK_DELAY_MAX_MS = Number(env('BOT_PICK_DELAY_MAX_MS', '2600'));
+
+function randomDelay(min, max) {
+  return min + Math.random() * (max - min);
+}
 
 function send(ws, message) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
@@ -19,9 +35,14 @@ function send(ws, message) {
 const draftQueue = []; // [{ ws, token }]
 const pods = new Map(); // podId -> pod
 const wsToPod = new Map(); // ws -> { podId, seatIndex } — only while a pod is in the picking/heroPick phase
+let draftQueueBotTimer = null;
 
 function generatePodId() {
   return `pod_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createDraftBotEntry() {
+  return { ws: null, token: `bot-${crypto.randomUUID()}`, isBot: true, botName: randomBotName() };
 }
 
 // ---- Queue ----
@@ -30,26 +51,46 @@ export function queueDraftEntry({ ws, token }) {
   if (draftQueue.some((e) => e.token === token)) return {};
   draftQueue.push({ ws, token });
   if (draftQueue.length >= Draft.POD_SIZE) {
+    clearTimeout(draftQueueBotTimer);
+    draftQueueBotTimer = null;
     const entries = draftQueue.splice(0, Draft.POD_SIZE);
     startPod(entries);
   } else {
     send(ws, { type: 'draftQueued', waiting: draftQueue.length, needed: Draft.POD_SIZE });
+    if (!draftQueueBotTimer) draftQueueBotTimer = setTimeout(fillDraftQueueWithBots, POD_BOT_TIMEOUT_MS);
   }
   return {};
+}
+
+// Fires POD_BOT_TIMEOUT_MS after the first entry joins an under-strength
+// queue — pads it out to a full pod with bots instead of leaving 1-3 real
+// players waiting indefinitely for strangers who may never show up.
+function fillDraftQueueWithBots() {
+  draftQueueBotTimer = null;
+  if (draftQueue.length === 0) return; // everyone cancelled in the meantime
+  const entries = draftQueue.splice(0, draftQueue.length);
+  while (entries.length < Draft.POD_SIZE) entries.push(createDraftBotEntry());
+  startPod(entries);
 }
 
 export function cancelDraftQueue(ws) {
   const idx = draftQueue.findIndex((e) => e.ws === ws);
   if (idx !== -1) draftQueue.splice(idx, 1);
+  if (draftQueue.length === 0 && draftQueueBotTimer) {
+    clearTimeout(draftQueueBotTimer);
+    draftQueueBotTimer = null;
+  }
 }
 
 // ---- Pod / picking ----
 
 function startPod(entries) {
   const id = generatePodId();
-  const seats = entries.map(({ ws, token }) => ({
+  const seats = entries.map(({ ws, token, isBot, botName }) => ({
     ws,
     token,
+    isBot: Boolean(isBot),
+    botName: botName || null,
     picks: [], // card ids, in pick order — 15 drafted + 1 free bonus = 16
     currentPack: null, // card ids currently held by this seat, or null between packs
     doneDrafting: false,
@@ -57,9 +98,12 @@ function startPod(entries) {
     pickTimer: null,
     packQueue: [], // packs that arrived while this seat was still deciding on currentPack
   }));
-  const pod = { id, seats, packRound: 0, seatsFinishedRound: 0, phase: 'picking' };
+  const pod = { id, seats, packRound: 0, seatsFinishedRound: 0, phase: 'picking', bracket: null };
   pods.set(id, pod);
-  seats.forEach((seat, i) => wsToPod.set(seat.ws, { podId: id, seatIndex: i }));
+  // Bots have no real socket — only real seats are worth indexing here.
+  seats.forEach((seat, i) => {
+    if (seat.ws) wsToPod.set(seat.ws, { podId: id, seatIndex: i });
+  });
   startPackRound(pod);
   return pod;
 }
@@ -109,14 +153,18 @@ function sendPackUpdate(pod, seatIndex) {
   });
 }
 
+// A bot seat "picks" through this exact same expiry path a slow human would
+// hit — just with a short, randomized human-like delay instead of the full
+// pick timer — so bot picking needs no separate code path at all.
 function armPickTimer(pod, seatIndex) {
   const seat = pod.seats[seatIndex];
   clearTimeout(seat.pickTimer);
+  const delay = seat.isBot ? randomDelay(BOT_PICK_DELAY_MIN_MS, BOT_PICK_DELAY_MAX_MS) : PICK_TIMER_MS;
   seat.pickTimer = setTimeout(() => {
     if (!seat.currentPack || seat.currentPack.length === 0) return;
     const randomId = seat.currentPack[Math.floor(Math.random() * seat.currentPack.length)];
     handlePick(pod, seatIndex, randomId);
-  }, PICK_TIMER_MS);
+  }, delay);
 }
 
 export function handleDraftPick(ws, cardId) {
@@ -153,6 +201,11 @@ function handlePick(pod, seatIndex, cardId) {
     seat.currentPack = null;
     seat.packQueue = []; // any packs still queued for this seat are simply skipped for them from here on
     send(seat.ws, { type: 'draftBonusCard', card: bonus, picks: seat.picks.map((id) => getCard(id)) });
+    if (seat.isBot) {
+      const factions = [...HERO_FACTIONS];
+      const faction = factions[Math.floor(Math.random() * factions.length)];
+      setTimeout(() => applyHeroPick(pod.id, seatIndex, faction), randomDelay(BOT_PICK_DELAY_MIN_MS, BOT_PICK_DELAY_MAX_MS));
+    }
     if (pod.seats.every((s) => s.doneDrafting)) pod.phase = 'heroPick';
     return;
   }
@@ -189,9 +242,13 @@ function handlePick(pod, seatIndex, cardId) {
 export function handleDraftHeroPick(ws, faction) {
   const entry = wsToPod.get(ws);
   if (!entry) return;
-  const pod = pods.get(entry.podId);
+  applyHeroPick(entry.podId, entry.seatIndex, faction);
+}
+
+function applyHeroPick(podId, seatIndex, faction) {
+  const pod = pods.get(podId);
   if (!pod) return;
-  const seat = pod.seats[entry.seatIndex];
+  const seat = pod.seats[seatIndex];
   if (!seat.doneDrafting || seat.heroFaction || !HERO_FACTIONS.has(faction)) return;
   seat.heroFaction = faction;
   if (pod.seats.every((s) => s.heroFaction)) startBracket(pod);
@@ -207,7 +264,15 @@ function deckFromPicks(picks) {
 
 function seatToRoomPlayer(pod, seatIndex) {
   const seat = pod.seats[seatIndex];
-  return { ws: seat.ws, token: seat.token, faction: seat.heroFaction, deck: deckFromPicks(seat.picks), autoPlay: false };
+  return {
+    ws: seat.ws,
+    token: seat.token,
+    faction: seat.heroFaction,
+    deck: deckFromPicks(seat.picks),
+    autoPlay: false,
+    isBot: seat.isBot,
+    botName: seat.botName,
+  };
 }
 
 function startBracketMatch(pod, seatA, seatB, onDone) {
@@ -225,6 +290,20 @@ function awardPrize(pod, seatIndex, prize) {
   send(pod.seats[seatIndex].ws, { type: 'draftPrize', prize });
 }
 
+// Broadcasts the pod's whole bracket shape/progress to every seat (real ws
+// only — send() no-ops for bots) — drives the client's floating
+// bracket-status button + subscreen, since the 2 seats not currently in a
+// live match otherwise have no visibility into what's happening in their pod.
+function broadcastBracket(pod) {
+  const payload = {
+    type: 'draftBracketUpdate',
+    seats: pod.seats.map((seat) => ({ name: displayNameFor(seat), isBot: seat.isBot })),
+    semis: pod.bracket.semis,
+    final: pod.bracket.final,
+  };
+  for (const seat of pod.seats) send(seat.ws, payload);
+}
+
 function startBracket(pod) {
   pod.phase = 'bracket';
   // No more draft-phase messages expected from these seats — the bracket's
@@ -232,15 +311,25 @@ function startBracket(pod) {
   for (const seat of pod.seats) wsToPod.delete(seat.ws);
 
   const { semis } = Draft.seedBracket([0, 1, 2, 3]);
+  pod.bracket = { semis: semis.map(([i, j]) => ({ players: [i, j], winner: null })), final: null };
+  broadcastBracket(pod);
+
   const semiResults = [null, null];
   semis.forEach(([i, j], semiIndex) => {
     startBracketMatch(pod, i, j, (winnerSeat, loserSeat) => {
       semiResults[semiIndex] = { winner: winnerSeat, loser: loserSeat };
+      pod.bracket.semis[semiIndex].winner = winnerSeat;
       awardPrize(pod, loserSeat, { commonCard: Draft.drawRandomCommonCard() });
       if (semiResults.every((r) => r)) {
+        pod.bracket.final = { players: [semiResults[0].winner, semiResults[1].winner], winner: null };
+      }
+      broadcastBracket(pod);
+      if (semiResults.every((r) => r)) {
         startBracketMatch(pod, semiResults[0].winner, semiResults[1].winner, (finalWinner, finalLoser) => {
+          pod.bracket.final.winner = finalWinner;
           awardPrize(pod, finalWinner, { packs: ['gem_pack', 'coin_pack'] });
           awardPrize(pod, finalLoser, { packs: ['coin_pack'] });
+          broadcastBracket(pod);
           pod.phase = 'done';
           pods.delete(pod.id);
         });

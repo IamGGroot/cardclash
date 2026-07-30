@@ -56,7 +56,10 @@ const BOT_NAMES = [
   'DestellosDeUmbra', 'CazadorSilente', 'RunaDorada', 'PielDePiedra', 'VozDelBosque',
 ];
 
-function randomBotName() {
+// Exported: server/draftPods.js and server/tournamentPods.js reuse this same
+// name pool for their own 5s-then-bot pod fallback, so a bot reads the same
+// whether it's standing in for a Quick Match, Draft, or Torneo opponent.
+export function randomBotName() {
   return BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
 }
 
@@ -80,7 +83,12 @@ function buildBotDeck() {
   return deck;
 }
 
-function createBotOpponent(autoPlay) {
+// Exported: server/draftPods.js and server/tournamentPods.js's own 5s pod
+// bot-fallback reuses this exact factory to fill missing seats — same deck
+// shape, same name pool, same isBot/botName contract startMatch already
+// knows how to drive (see startMatch/opponentDisplayName/runBotOpponentTurns
+// below), so a pod's bot seats behave identically to a Quick Match bot.
+export function createBotOpponent(autoPlay) {
   const factions = Object.keys(HEROES_BY_FACTION);
   const faction = factions[Math.floor(Math.random() * factions.length)];
   return {
@@ -195,10 +203,14 @@ function startMatch(room, { perkThreshold } = {}) {
   runBotOpponentTurns(room);
 }
 
-function opponentDisplayName(player) {
+// Exported as displayNameFor: draftPods.js/tournamentPods.js reuse this to
+// label pod seats in their own bracket-status broadcasts, not just the 1v1
+// opponent nameplate this file sends via matchStart.
+export function displayNameFor(player) {
   if (player.isBot) return player.botName;
   return getOrCreateAccount(player.token).username;
 }
+const opponentDisplayName = displayNameFor;
 
 function findHero(faction) {
   // Small indirection so a missing/unknown faction fails loudly instead of
