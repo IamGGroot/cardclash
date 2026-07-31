@@ -2042,6 +2042,42 @@ html, body {
   font-size: 14px;
 }
 
+.tournament-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tournament-history-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a3358;
+  background: var(--bg-alt);
+  font-size: 13px;
+}
+
+.tournament-history-date {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.tournament-history-placement {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tournament-history-reward {
+  text-align: right;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .btn.tiny {
   padding: 6px 12px;
   font-size: 18px;

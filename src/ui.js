@@ -535,6 +535,11 @@ function renderHome() {
         <span class="home-nav-label">Misiones</span>
         ${claimable ? `<span class="home-nav-badge">${claimable}</span>` : ''}
       </button>
+      <button class="home-nav-item" id="btn-tournaments">
+        <span class="home-nav-icon">🏆</span>
+        <span class="home-nav-label">Torneos</span>
+        ${bracketStatus?.kind === 'tournament' ? '<span class="home-nav-badge">●</span>' : ''}
+      </button>
     </div>
 
     <button class="ad-watch-fab" id="home-watch-ad" ${canWatchAd(save) ? '' : 'disabled'} data-tooltip="${
@@ -571,6 +576,7 @@ function renderHome() {
   document.getElementById('btn-deck').onclick = () => go('deckSelect');
   document.getElementById('btn-shop').onclick = () => go('shop');
   document.getElementById('btn-missions').onclick = () => go('missions');
+  document.getElementById('btn-tournaments').onclick = () => go('tournaments');
   document.getElementById('btn-league-strip').onclick = () => go('ladder');
   document.getElementById('home-watch-ad').onclick = () => watchAd('home');
   document.querySelectorAll('[data-offer]').forEach((btn) => {
@@ -2491,7 +2497,9 @@ function renderDraftHeroPick() {
 
 // Shared by Draft and Torneo — both award the same shape of prize
 // (packs and/or a consolation common card) via the same reveal screen.
-function bracketPrizeReveal(prize) {
+// `kind` is only used to log Torneo results into save.tournamentHistory —
+// Draft has no history screen (not asked for), so it's left undefined there.
+function bracketPrizeReveal(prize, kind) {
   // This seat's part in the bracket is over the moment its prize arrives
   // (a semifinal loser gets theirs immediately; a finalist gets theirs once
   // the final resolves) — nothing more to show in the status subscreen.
@@ -2504,6 +2512,7 @@ function bracketPrizeReveal(prize) {
   bracketStatus = null;
   bracketModalOpen = false;
   bracketFinishedForMe = true;
+  if (kind === 'tournament') recordTournamentHistory(prize);
   if (prize.commonCard) {
     Store.addCardsToCollection(save, [prize.commonCard]);
     persist();
@@ -2520,6 +2529,17 @@ function bracketPrizeReveal(prize) {
     showToast('🏆 ¡Ganaste sobres de premio!');
     go('reveal');
   }
+}
+
+// Placement is derived straight from the prize shape server/tournamentPods.js
+// already sends (see startPod there): 2 packs = champion, 1 pack = runner-up,
+// a lone commonCard = a semifinal loss. Newest first, capped so this can't
+// grow the save file without bound over a long-lived account.
+function recordTournamentHistory(prize) {
+  const placement = prize.packs?.length === 2 ? 'champion' : prize.packs?.length === 1 ? 'runnerUp' : 'semifinalist';
+  save.tournamentHistory = save.tournamentHistory || [];
+  save.tournamentHistory.unshift({ date: new Date().toISOString().slice(0, 10), placement, prize });
+  save.tournamentHistory = save.tournamentHistory.slice(0, 20);
 }
 
 // ---------------- Torneo mode ----------------
@@ -2571,6 +2591,65 @@ function renderTournamentWaiting() {
     persist();
     go('home');
   };
+}
+
+const TOURNAMENT_PLACEMENT_LABEL = {
+  champion: '🏆 Campeón',
+  runnerUp: '🥈 Subcampeón',
+  semifinalist: '🥉 Semifinalista',
+};
+
+function tournamentPrizeLabel(prize) {
+  if (prize.packs) return prize.packs.map((packId) => PACKS[packId]?.label || packId).join(' + ');
+  if (prize.commonCard) return `Carta: ${prize.commonCard.name}`;
+  return '';
+}
+
+// Home's bottom-nav "Torneos" tab — a lightweight home base for the mode:
+// jump back into whatever's already in progress (the same live bracket the
+// floating status FAB tracks — see bracketStatus), start a fresh one, and
+// browse past results (save.tournamentHistory, written by
+// recordTournamentHistory whenever a tournamentPrize lands).
+function renderTournaments() {
+  const isActive = bracketStatus?.kind === 'tournament';
+  const history = save.tournamentHistory || [];
+  app.innerHTML = `
+    ${header()}
+    <div class="screen">
+      <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>🏆 Torneos</h2></div>
+      ${
+        isActive
+          ? `<div class="welcome-offer">
+              <div class="welcome-offer-badge">⏳ En curso</div>
+              <h3>Tenés un torneo activo</h3>
+              <p class="hint">Tu próxima partida del bracket va a empezar sola apenas esté lista.</p>
+              <button class="btn primary" id="view-tournament-status">Ver estado</button>
+            </div>`
+          : `<button class="btn primary big" id="new-tournament">🏆 Nuevo torneo${
+              save.tournamentEntries ? ` (${save.tournamentEntries} entrada${save.tournamentEntries === 1 ? '' : 's'})` : ''
+            }</button>`
+      }
+      <h3>Historial</h3>
+      ${
+        history.length
+          ? `<div class="tournament-history">${history
+              .map(
+                (h) => `
+              <div class="tournament-history-row">
+                <span class="tournament-history-date">${h.date}</span>
+                <span class="tournament-history-placement">${TOURNAMENT_PLACEMENT_LABEL[h.placement]}</span>
+                <span class="tournament-history-reward">${escapeHtml(tournamentPrizeLabel(h.prize))}</span>
+              </div>`
+              )
+              .join('')}</div>`
+          : `<p class="hint">Todavía no jugaste ningún torneo.</p>`
+      }
+    </div>`;
+  document.getElementById('back').onclick = () => go('home');
+  const viewBtn = document.getElementById('view-tournament-status');
+  if (viewBtn) viewBtn.onclick = () => { bracketModalOpen = true; render(); };
+  const newBtn = document.getElementById('new-tournament');
+  if (newBtn) newBtn.onclick = () => startTournamentEntry();
 }
 
 // ---------------- Match lifecycle ----------------
@@ -2925,7 +3004,7 @@ function setupNetListeners() {
   Net.on('tournamentPrize', (msg) => {
     Stats.bumpStat(save, 'tournamentsPlayed', 1);
     if (msg.prize?.packs?.includes('gem_pack')) Stats.bumpStat(save, 'tournamentsWon', 1);
-    bracketPrizeReveal(msg.prize);
+    bracketPrizeReveal(msg.prize, 'tournament');
   });
   Net.on('tournamentBracketUpdate', (msg) => onBracketUpdate('tournament', msg));
 }
@@ -4209,6 +4288,7 @@ export function render() {
   else if (screen === 'deckbuilder') renderDeckbuilder();
   else if (screen === 'collection') renderCollection();
   else if (screen === 'missions') renderMissions();
+  else if (screen === 'tournaments') renderTournaments();
   else if (screen === 'seasonPass') renderSeasonPass();
   else if (screen === 'ladder') renderLadder();
   else if (screen === 'leaderboard') renderLeaderboard();
