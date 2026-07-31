@@ -607,35 +607,14 @@ function renderHome() {
   if (playDraftBtn) {
     playDraftBtn.onclick = () => {
       playMenuOpen = false;
-      if (!save.draftEntries) {
-        showToast('No tenés entradas a Draft — comprá una en la Tienda.');
-        go('shop');
-        return;
-      }
-      save.draftEntries -= 1;
-      Stats.bumpStat(save, 'entriesConsumed', 1);
-      persist();
-      startDraftEntry();
+      enterDraftFlow();
     };
   }
   const playTournamentBtn = document.getElementById('play-tournament');
   if (playTournamentBtn) {
     playTournamentBtn.onclick = () => {
       playMenuOpen = false;
-      if (!isDeckReady(false)) {
-        showToast('Completá tu mazo (16 cartas) en "Mis Mazos" antes de entrar a un torneo.');
-        go('deckSelect');
-        return;
-      }
-      if (!save.tournamentEntries) {
-        showToast('No tenés entradas a Torneo — comprá una en la Tienda.');
-        go('shop');
-        return;
-      }
-      save.tournamentEntries -= 1;
-      Stats.bumpStat(save, 'entriesConsumed', 1);
-      persist();
-      startTournamentEntry();
+      enterTournamentFlow();
     };
   }
   document.getElementById('btn-pass-banner').onclick = () => go('seasonPass');
@@ -2380,6 +2359,24 @@ function renderReveal() {
 // server/draftPods.js for why). This section only covers the draft-specific
 // screens (entry, queue, picking, hero pick) and the prize reveal.
 
+// Gate + consume the entry, then hand off to startDraftEntry — shared by
+// the Jugar-menu's Draft button and the Torneos screen's "Nuevo draft"
+// button so both go through the exact same paywall/refund contract
+// startDraftEntry (and its own failure-path refund) already expects: the
+// caller decrements save.draftEntries up front, and startDraftEntry only
+// ever gives that back on a genuine failure to actually start.
+function enterDraftFlow() {
+  if (!save.draftEntries) {
+    showToast('No tenés entradas a Draft — comprá una en la Tienda.');
+    go('shop');
+    return;
+  }
+  save.draftEntries -= 1;
+  Stats.bumpStat(save, 'entriesConsumed', 1);
+  persist();
+  startDraftEntry();
+}
+
 async function startDraftEntry() {
   draftQueueStatus = null;
   draftPack = null;
@@ -2549,6 +2546,25 @@ function recordTournamentHistory(prize) {
 // startDirectMatch rooms.js uses for every other online match, so
 // renderBattle is entirely unmodified here too.
 
+// Same gate-then-consume contract as enterDraftFlow, shared by the
+// Jugar-menu's Torneo button and the Torneos screen's "Nuevo torneo" button.
+function enterTournamentFlow() {
+  if (!isDeckReady(false)) {
+    showToast('Completá tu mazo (16 cartas) en "Mis Mazos" antes de entrar a un torneo.');
+    go('deckSelect');
+    return;
+  }
+  if (!save.tournamentEntries) {
+    showToast('No tenés entradas a Torneo — comprá una en la Tienda.');
+    go('shop');
+    return;
+  }
+  save.tournamentEntries -= 1;
+  Stats.bumpStat(save, 'entriesConsumed', 1);
+  persist();
+  startTournamentEntry();
+}
+
 async function startTournamentEntry() {
   if (!isDeckReady(false)) {
     save.tournamentEntries = (save.tournamentEntries || 0) + 1;
@@ -2605,29 +2621,43 @@ function tournamentPrizeLabel(prize) {
   return '';
 }
 
-// Home's bottom-nav "Torneos" tab — a lightweight home base for the mode:
-// jump back into whatever's already in progress (the same live bracket the
-// floating status FAB tracks — see bracketStatus), start a fresh one, and
-// browse past results (save.tournamentHistory, written by
-// recordTournamentHistory whenever a tournamentPrize lands).
+// Home's bottom-nav "Torneos" tab — a lightweight home base for both bracket
+// modes (Draft included, since it's the same pack-and-pass-then-bracket
+// shape as Torneo, just with drafted cards instead of your own deck): jump
+// back into whatever's already in progress (the same live bracket the
+// floating status FAB tracks — see bracketStatus), start a fresh Torneo or
+// Draft, and browse past Torneo results (save.tournamentHistory, written by
+// recordTournamentHistory whenever a tournamentPrize lands — Draft has no
+// history log, only asked for Torneo's).
 function renderTournaments() {
-  const isActive = bracketStatus?.kind === 'tournament';
+  const activeKind = bracketStatus?.kind; // 'tournament' | 'draft' | undefined
   const history = save.tournamentHistory || [];
+  const activeCardHtml = (label, hint) => `
+    <div class="welcome-offer">
+      <div class="welcome-offer-badge">⏳ En curso</div>
+      <h3>${label}</h3>
+      <p class="hint">${hint}</p>
+      <button class="btn primary" id="view-bracket-status">Ver estado</button>
+    </div>`;
+  const entryButtonsHtml = `
+    <div class="tournament-entry-buttons">
+      <button class="btn primary big" id="new-tournament">🏆 Nuevo torneo${
+        save.tournamentEntries ? ` (${save.tournamentEntries} entrada${save.tournamentEntries === 1 ? '' : 's'})` : ''
+      }</button>
+      <button class="btn primary big" id="new-draft">🎴 Nuevo draft${
+        save.draftEntries ? ` (${save.draftEntries} entrada${save.draftEntries === 1 ? '' : 's'})` : ''
+      }</button>
+    </div>`;
   app.innerHTML = `
     ${header()}
     <div class="screen">
       <div class="screen-header"><button class="btn back" id="back">← Volver</button><h2>🏆 Torneos</h2></div>
       ${
-        isActive
-          ? `<div class="welcome-offer">
-              <div class="welcome-offer-badge">⏳ En curso</div>
-              <h3>Tenés un torneo activo</h3>
-              <p class="hint">Tu próxima partida del bracket va a empezar sola apenas esté lista.</p>
-              <button class="btn primary" id="view-tournament-status">Ver estado</button>
-            </div>`
-          : `<button class="btn primary big" id="new-tournament">🏆 Nuevo torneo${
-              save.tournamentEntries ? ` (${save.tournamentEntries} entrada${save.tournamentEntries === 1 ? '' : 's'})` : ''
-            }</button>`
+        activeKind === 'tournament'
+          ? activeCardHtml('Tenés un torneo activo', 'Tu próxima partida del bracket va a empezar sola apenas esté lista.')
+          : activeKind === 'draft'
+            ? activeCardHtml('Tenés un draft activo', 'Tu próxima partida del bracket va a empezar sola apenas esté lista.')
+            : entryButtonsHtml
       }
       <h3>Historial</h3>
       ${
@@ -2646,10 +2676,12 @@ function renderTournaments() {
       }
     </div>`;
   document.getElementById('back').onclick = () => go('home');
-  const viewBtn = document.getElementById('view-tournament-status');
+  const viewBtn = document.getElementById('view-bracket-status');
   if (viewBtn) viewBtn.onclick = () => { bracketModalOpen = true; render(); };
   const newBtn = document.getElementById('new-tournament');
-  if (newBtn) newBtn.onclick = () => startTournamentEntry();
+  if (newBtn) newBtn.onclick = () => enterTournamentFlow();
+  const newDraftBtn = document.getElementById('new-draft');
+  if (newDraftBtn) newDraftBtn.onclick = () => enterDraftFlow();
 }
 
 // ---------------- Match lifecycle ----------------
