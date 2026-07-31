@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { newGame } from '../src/battle.js';
-import { applyLevelUp, applySpecial, applyDeploy, applyMove, applyAttack, applyEndTurn } from '../src/actions.js';
+import { applyLevelUp, applySpecial, applyDeploy, applyReplace, applyMove, applyAttack, applyEndTurn } from '../src/actions.js';
 
 // Same helpers as tests/battle.test.js — kept local since actions.js is a
 // thin wrapper and doesn't need the full battle.test.js fixture surface.
@@ -75,6 +75,31 @@ describe('applyDeploy', () => {
     placeCreature(state, 'p1', 0, 'front');
     state.p1.hand = [state.p1.hand[0]];
     const step = applyDeploy(state, 'p1', 0, 0, 'front');
+    assert.equal(step, null);
+  });
+});
+
+describe('applyReplace', () => {
+  test('returns a replace step carrying both cards and the slot on success', () => {
+    const state = freshGame();
+    const oldCreature = placeCreature(state, 'p1', 0, 'front', { cardId: 'a2' });
+    state.p1.hand = ['a1'];
+    const step = applyReplace(state, 'p1', 0, 'front', 0);
+    assert.ok(step);
+    assert.equal(step.type, 'replace');
+    assert.equal(step.side, 'p1');
+    assert.equal(step.laneIndex, 0);
+    assert.equal(step.row, 'front');
+    assert.equal(step.card.id, 'a1');
+    assert.equal(step.oldCard.id, 'a2');
+    assert.notEqual(state.p1.battlefield[0].front.instanceId, oldCreature.instanceId);
+    assert.equal(state.p1.battlefield[0].front.cardId, 'a1');
+  });
+
+  test('returns null when the slot is empty', () => {
+    const state = freshGame();
+    state.p1.hand = ['a1'];
+    const step = applyReplace(state, 'p1', 0, 'front', 0);
     assert.equal(step, null);
   });
 });

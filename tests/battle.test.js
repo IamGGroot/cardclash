@@ -7,6 +7,7 @@ import {
   levelUpAttribute,
   useHeroSpecial,
   playCreature,
+  replaceCreature,
   playSpellOrFortune,
   getValidAttackTargets,
   getValidMoveTargets,
@@ -222,6 +223,82 @@ describe('playCreature', () => {
     state.p1.hand = ['a3']; // Sanadora de Alba: onDeploy heal_hero_2
     playCreature(state, 'p1', 0, 0, 'back');
     assert.equal(state.p1.hp, 12);
+  });
+});
+
+describe('replaceCreature', () => {
+  test('sacrifices the occupant and deploys the new creature into its slot', () => {
+    const state = freshGame();
+    placeCreature(state, 'p1', 0, 'front', { cardId: 'a2' });
+    const before = state.p1.resource;
+    state.p1.hand = ['a1']; // Novicio: cost 1, requirement 1, melee
+    const res = replaceCreature(state, 'p1', 0, 'front', 0);
+    assert.equal(res.ok, true);
+    assert.equal(res.oldCardId, 'a2');
+    assert.equal(state.p1.battlefield[0].front.cardId, 'a1');
+    assert.equal(state.p1.resource, before - 1);
+    assert.equal(state.p1.hand.length, 0);
+    assert.ok(state.p1.discard.includes('a2'), 'the sacrificed creature must land in the discard pile');
+  });
+
+  test('rejects when the target slot is empty', () => {
+    const state = freshGame();
+    state.p1.hand = ['a1'];
+    const res = replaceCreature(state, 'p1', 0, 'front', 0);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'empty');
+  });
+
+  test('rejects when resource is insufficient', () => {
+    const state = freshGame({ resource: 0 });
+    placeCreature(state, 'p1', 0, 'front');
+    state.p1.hand = ['a1'];
+    const res = replaceCreature(state, 'p1', 0, 'front', 0);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'resource');
+    assert.equal(state.p1.battlefield[0].front.cardId, 'a1', 'a rejected replace must leave the original occupant in place');
+  });
+
+  test('rejects when might is below the new card\'s requirement', () => {
+    const state = freshGame({ might: 0 });
+    placeCreature(state, 'p1', 0, 'front');
+    state.p1.hand = ['a5']; // Vengador Sacro, requirement 4
+    const res = replaceCreature(state, 'p1', 0, 'front', 0);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'requirement');
+  });
+
+  test("rejects when the new card's placement doesn't allow the occupied slot's row", () => {
+    const state = freshGame();
+    placeCreature(state, 'p1', 0, 'back'); // any occupant — a shooter-legal slot
+    state.p1.hand = ['a1']; // Novicio is melee-only (front)
+    const res = replaceCreature(state, 'p1', 0, 'back', 0);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'placement');
+  });
+
+  test('an onDeploy ability on the new card still fires', () => {
+    const state = freshGame();
+    state.p1.hp = 10;
+    placeCreature(state, 'p1', 0, 'back');
+    state.p1.hand = ['a3']; // Sanadora de Alba: onDeploy heal_hero_2
+    replaceCreature(state, 'p1', 0, 'back', 0);
+    assert.equal(state.p1.hp, 12);
+  });
+
+  test('increments stats.creaturesPlayed only for p1', () => {
+    const state = freshGame();
+    placeCreature(state, 'p1', 0, 'front');
+    state.p1.hand = ['a1'];
+    replaceCreature(state, 'p1', 0, 'front', 0);
+    assert.equal(state.stats.creaturesPlayed, 1);
+
+    state.p2.resource = 10;
+    state.p2.might = 6;
+    placeCreature(state, 'p2', 0, 'front');
+    state.p2.hand = ['a1'];
+    replaceCreature(state, 'p2', 0, 'front', 0);
+    assert.equal(state.stats.creaturesPlayed, 1, 'p2 replaces must not count toward the player-facing stat');
   });
 });
 

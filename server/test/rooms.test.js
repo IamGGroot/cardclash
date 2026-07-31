@@ -346,3 +346,82 @@ describe('room lifecycle over real WebSocket connections', () => {
     b.close();
   });
 });
+
+// A deck built entirely from cost-1/requirement-1 creatures (drawn from
+// across every faction — deckbuilding is freeform, see store.js) so that
+// no matter which 4 cards a shuffled opening hand happens to deal, every
+// one of them is legally deployable the instant might reaches 1 — no
+// flakiness from hoping a specific card id got drawn. All 8 are melee or
+// flyer, so 'front' is always a legal row for whichever one gets picked.
+function cheapCreatureDeck() {
+  return { a1: 2, a13: 2, g1: 2, g14: 2, u1: 2, u13: 2, u15: 2, t1: 2 };
+}
+
+describe('replace action over a real WebSocket connection', () => {
+  test('sacrificing an occupied slot deploys the new creature there and reports both cards', async () => {
+    const a = await connect();
+    const b = await connect();
+    const identA = await identify(a, null);
+    const identB = await identify(b, null);
+
+    a.send(JSON.stringify({ type: 'createRoom', token: identA.account.token, faction: 'albura', deck: cheapCreatureDeck() }));
+    const created = await nextMessage(a);
+    b.send(JSON.stringify({ type: 'joinRoom', token: identB.account.token, code: created.code, faction: 'ignara', deck: fullDeck('g') }));
+    const [matchStartA] = await Promise.all([nextMessage(a), nextMessage(b)]);
+
+    // Turn 1 (A/p1): might 0→1, then deploy whatever's first in hand — every
+    // card in cheapCreatureDeck() is legal in the front row at cost 1.
+    a.send(JSON.stringify({ type: 'action', action: { kind: 'levelUp', attr: 'might' } }));
+    await Promise.all([nextMessage(a), nextMessage(b)]);
+
+    const firstCardId = matchStartA.state.p1.hand[0];
+    a.send(JSON.stringify({ type: 'action', action: { kind: 'deploy', handIdx: 0, laneIndex: 0, row: 'front' } }));
+    const [deployStepA] = await Promise.all([nextMessage(a), nextMessage(b)]);
+    assert.equal(deployStepA.step.type, 'deploy');
+    assert.equal(deployStepA.state.p1.battlefield[0].front.cardId, firstCardId);
+
+    // End A's turn, then B immediately ends theirs — resourceMax only grows
+    // once each side has actually taken a turn, and the replace below needs
+    // a second unit of resource on top of what the first deploy just spent.
+    a.send(JSON.stringify({ type: 'action', action: { kind: 'endTurn' } }));
+    await Promise.all([nextMessage(a), nextMessage(b)]);
+    b.send(JSON.stringify({ type: 'action', action: { kind: 'endTurn' } }));
+    const [backToA] = await Promise.all([nextMessage(a), nextMessage(b)]);
+    assert.equal(backToA.state.active, 'p1', "it must be A's turn again before the replace attempt");
+    assert.equal(backToA.state.p1.resource, 2, 'resourceMax grows by 1 each of this side\'s own turns');
+
+    const replacementCardId = backToA.state.p1.hand[0];
+    a.send(JSON.stringify({ type: 'action', action: { kind: 'replace', handIdx: 0, laneIndex: 0, row: 'front' } }));
+    const [replaceStepA, replaceStepB] = await Promise.all([nextMessage(a), nextMessage(b)]);
+
+    assert.equal(replaceStepA.type, 'step');
+    assert.equal(replaceStepA.step.type, 'replace');
+    assert.equal(replaceStepA.step.card.id, replacementCardId);
+    assert.equal(replaceStepA.step.oldCard.id, firstCardId);
+    assert.equal(replaceStepA.state.p1.battlefield[0].front.cardId, replacementCardId);
+    // Both sides see the same resulting board, mirrored to their own view.
+    assert.equal(replaceStepB.state.p2.battlefield[0].front.cardId, replacementCardId);
+
+    a.close();
+    b.close();
+  });
+
+  test('rejects a replace targeting an empty slot', async () => {
+    const a = await connect();
+    const b = await connect();
+    const identA = await identify(a, null);
+    const identB = await identify(b, null);
+
+    a.send(JSON.stringify({ type: 'createRoom', token: identA.account.token, faction: 'albura', deck: cheapCreatureDeck() }));
+    const created = await nextMessage(a);
+    b.send(JSON.stringify({ type: 'joinRoom', token: identB.account.token, code: created.code, faction: 'ignara', deck: fullDeck('g') }));
+    await Promise.all([nextMessage(a), nextMessage(b)]);
+
+    a.send(JSON.stringify({ type: 'action', action: { kind: 'replace', handIdx: 0, laneIndex: 0, row: 'front' } }));
+    const err = await nextMessage(a);
+    assert.equal(err.type, 'error');
+
+    a.close();
+    b.close();
+  });
+});

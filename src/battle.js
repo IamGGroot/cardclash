@@ -164,6 +164,50 @@ export function playCreature(state, side, handIdx, laneIndex, row) {
   return { ok: true };
 }
 
+// Sacrifices your own creature occupying (laneIndex, row) and immediately
+// deploys a hand creature into that same slot — the only way to deploy once
+// every slot your deck can legally use is full, and a deliberate tactical
+// option even with room to spare (surprising the opponent, or swapping a
+// spent/weak body for a fresh threat mid-turn). The old creature is lost for
+// good (straight to the discard pile, same as any other death) — there's no
+// refund of its mana or life, so the cost is the creature itself, not an
+// extra resource tax on top of the new card's own cost.
+export function replaceCreature(state, side, laneIndex, row, handIdx) {
+  const p = state[side];
+  const lane = p.battlefield[laneIndex];
+  const oldCreature = lane ? lane[row] : null;
+  if (!lane || !oldCreature) return { ok: false, reason: 'empty' };
+  const cardId = p.hand[handIdx];
+  const card = getCard(cardId);
+  if (!card || card.type !== 'creature') return { ok: false };
+  if (card.cost > p.resource) return { ok: false, reason: 'resource' };
+  if (p.might < card.requirement) return { ok: false, reason: 'requirement' };
+  const legalRows = card.placement === 'melee' ? ['front'] : card.placement === 'shooter' ? ['back'] : ['front', 'back'];
+  if (!legalRows.includes(row)) return { ok: false, reason: 'placement' };
+
+  p.discard.push(oldCreature.cardId);
+  const instance = {
+    instanceId: nextId(),
+    cardId,
+    atk: card.atk,
+    retaliate: card.retaliate,
+    life: card.life,
+    maxLife: card.life,
+    canAttack: false,
+  };
+  lane[row] = instance;
+  p.resource -= card.cost;
+  p.hand.splice(handIdx, 1);
+  if (side === 'p1') state.stats.creaturesPlayed += 1;
+
+  if (card.ability && card.ability.trigger === 'onDeploy') {
+    applyEffect(state, side, card.ability.effect, undefined, undefined);
+  }
+  cleanupBattlefield(state, side);
+  checkWin(state);
+  return { ok: true, oldCardId: oldCreature.cardId };
+}
+
 export function playSpellOrFortune(state, side, handIdx, target) {
   const p = state[side];
   const cardId = p.hand[handIdx];

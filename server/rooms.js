@@ -12,6 +12,7 @@ import {
   applyLevelUp,
   applySpecial,
   applyDeploy,
+  applyReplace,
   applySpell,
   applyMove,
   applyAttack,
@@ -541,6 +542,11 @@ export function handleAction(ws, action) {
       case 'deploy':
         if (Number.isInteger(action.handIdx) && isLane(action.laneIndex) && ROWS.has(action.row)) {
           step = applyDeploy(state, side, action.handIdx, action.laneIndex, action.row);
+        }
+        break;
+      case 'replace':
+        if (Number.isInteger(action.handIdx) && isLane(action.laneIndex) && ROWS.has(action.row)) {
+          step = applyReplace(state, side, action.laneIndex, action.row, action.handIdx);
         }
         break;
       case 'spell':

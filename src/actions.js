@@ -3,6 +3,7 @@ import {
   levelUpAttribute,
   useHeroSpecial,
   playCreature,
+  replaceCreature,
   playSpellOrFortune,
   moveCreature,
   attack,
@@ -33,6 +34,17 @@ export function applyDeploy(state, side, handIdx, laneIndex, row) {
   const card = cardId ? getCard(cardId) : null;
   const res = playCreature(state, side, handIdx, laneIndex, row);
   return res.ok ? { type: 'deploy', side, card, laneIndex, row } : null;
+}
+
+// Sacrifices your own creature at (laneIndex, row) and deploys a hand
+// creature into that slot in its place — see replaceCreature in battle.js.
+export function applyReplace(state, side, laneIndex, row, handIdx) {
+  const oldCreature = state[side].battlefield[laneIndex] && state[side].battlefield[laneIndex][row];
+  const oldCard = oldCreature ? getCard(oldCreature.cardId) : null;
+  const cardId = state[side].hand[handIdx];
+  const card = cardId ? getCard(cardId) : null;
+  const res = replaceCreature(state, side, laneIndex, row, handIdx);
+  return res.ok ? { type: 'replace', side, card, oldCard, laneIndex, row } : null;
 }
 
 export function applySpell(state, side, handIdx, target) {

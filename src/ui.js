@@ -21,6 +21,7 @@ import {
   levelUpAttribute,
   useHeroSpecial,
   playCreature,
+  replaceCreature,
   playSpellOrFortune,
   getValidAttackTargets,
   getValidMoveTargets,
@@ -82,9 +83,17 @@ let tournamentQueueStatus = null; // { waiting, needed } while in the Torneo ent
 let bracketStatus = null; // { kind: 'draft'|'tournament', seats, semis, final, startedAt }
 let bracketModalOpen = false;
 let bracketElapsedTimerId = null;
+// Latches true the instant this seat's own prize arrives (see
+// bracketPrizeReveal) — the server sends that prize and one more trailing
+// bracketUpdate for the same event as two separate messages, and without
+// this flag the trailing update would resurrect bracketStatus right after
+// bracketPrizeReveal cleared it, leaving the status FAB's timer stuck on
+// screen with nothing left to ever clear it again.
+let bracketFinishedForMe = false;
 
 let pendingPlacement = null; // { idx, card } while choosing a slot for a creature
 let pendingTarget = null; // { idx, card } while choosing a target for a spell/fortune
+let pendingReplace = null; // { idx, card, laneIndex, row, oldCard } while confirming a sacrifice-and-replace deploy onto an occupied own slot
 let selectedAttacker = null; // { laneIndex, row } while choosing an attack target
 let missionsTabExpanded = false; // home screen's side tab, toggled by tap (desktop also gets :hover)
 let missionsScreenTab = 'daily'; // which sub-tab the Misiones screen is showing: 'daily' or an Achievements category id
@@ -157,6 +166,7 @@ function go(next) {
   selectedAttacker = null;
   pendingPlacement = null;
   pendingTarget = null;
+  pendingReplace = null;
   playMenuOpen = false;
   topMenuOpen = false;
   render();
@@ -2371,6 +2381,7 @@ async function startDraftEntry() {
   draftHeroChosen = false;
   bracketStatus = null;
   bracketModalOpen = false;
+  bracketFinishedForMe = false;
   screen = 'draftWaiting';
   render();
   try {
@@ -2484,8 +2495,15 @@ function bracketPrizeReveal(prize) {
   // This seat's part in the bracket is over the moment its prize arrives
   // (a semifinal loser gets theirs immediately; a finalist gets theirs once
   // the final resolves) — nothing more to show in the status subscreen.
+  // bracketFinishedForMe latches this: the server sends prize-then-bracket-
+  // update as two separate messages for the exact same event (see
+  // server/draftPods.js/tournamentPods.js's awardPrize-then-broadcastBracket
+  // ordering), and without the latch that trailing update would resurrect
+  // bracketStatus right after this clears it — a floating status FAB stuck
+  // on screen forever, ticking a timer nothing will ever clear again.
   bracketStatus = null;
   bracketModalOpen = false;
+  bracketFinishedForMe = true;
   if (prize.commonCard) {
     Store.addCardsToCollection(save, [prize.commonCard]);
     persist();
@@ -2523,6 +2541,7 @@ async function startTournamentEntry() {
   tournamentQueueStatus = null;
   bracketStatus = null;
   bracketModalOpen = false;
+  bracketFinishedForMe = false;
   screen = 'tournamentWaiting';
   render();
   try {
@@ -2630,6 +2649,7 @@ function startMatch(faction, auto = false) {
   selectedAttacker = null;
   pendingPlacement = null;
   pendingTarget = null;
+  pendingReplace = null;
   battleMenuOpen = false;
   forfeitConfirmOpen = false;
   endTurnConfirmOpen = false;
@@ -2827,6 +2847,7 @@ function setupNetListeners() {
     selectedAttacker = null;
     pendingPlacement = null;
     pendingTarget = null;
+    pendingReplace = null;
     battleMenuOpen = false;
     forfeitConfirmOpen = false;
     endTurnConfirmOpen = false;
@@ -2910,6 +2931,7 @@ function setupNetListeners() {
 }
 
 function onBracketUpdate(kind, msg) {
+  if (bracketFinishedForMe) return;
   bracketStatus = {
     kind,
     seats: msg.seats,
@@ -2932,6 +2954,7 @@ function forEachOccupied(state, side, fn) {
 function computeHighlights(state) {
   const set = new Set();
   const moveSet = new Set();
+  const replaceSet = new Set();
   let face = null;
 
   if (selectedAttacker) {
@@ -2962,10 +2985,14 @@ function computeHighlights(state) {
     for (let lane = 0; lane < 4; lane++) {
       for (const row of rows) {
         if (!state.p1.battlefield[lane][row]) set.add(`p1:${lane}:${row}`);
+        // A row-legal own slot that's already occupied isn't a normal deploy
+        // target, but it IS a valid sacrifice-and-replace target — see
+        // onSlotClick's pendingPlacement branch and pendingReplace.
+        else replaceSet.add(`p1:${lane}:${row}`);
       }
     }
   }
-  return { set, moveSet, face };
+  return { set, moveSet, replaceSet, face };
 }
 
 function slotHtml(state, side, laneIndex, row, highlights) {
@@ -2973,6 +3000,7 @@ function slotHtml(state, side, laneIndex, row, highlights) {
   const key = `${side}:${laneIndex}:${row}`;
   const isHighlighted = highlights.set.has(key);
   const isMoveTarget = highlights.moveSet.has(key);
+  const isReplaceTarget = highlights.replaceSet.has(key);
 
   if (!creature) {
     return `<div class="lane-slot empty ${isHighlighted ? 'legal-target' : ''} ${isMoveTarget ? 'legal-move-target' : ''}" data-side="${side}" data-lane="${laneIndex}" data-row="${row}"></div>`;
@@ -3011,12 +3039,13 @@ function slotHtml(state, side, laneIndex, row, highlights) {
   const showFaceAttackIcon = isSelected && highlights.face === 'p2';
 
   return `
-    <div class="lane-slot occupied ${isHighlighted ? 'legal-target' : ''}" data-side="${side}" data-lane="${laneIndex}" data-row="${row}">
+    <div class="lane-slot occupied ${isHighlighted ? 'legal-target' : ''} ${isReplaceTarget ? 'legal-replace-target' : ''}" data-side="${side}" data-lane="${laneIndex}" data-row="${row}">
       <div class="board-card rarity-${card.rarity} ${canAttackNow ? 'can-attack' : ''} ${isSelected ? 'selected' : ''} ${isNew ? 'card-enter' : ''}" style="--rarity-color:${RARITY_COLORS[card.rarity]}" data-tooltip="${escapeAttr(tooltipLines.join('\n'))}">
         <div class="card-art small">${cardArtSVG(card)}</div>
         <div class="card-stats"><span class="atk ${atkClass}">${atk}</span><span class="ret ${retClass}">${ret}</span><span class="life ${lifeClass}">${life}</span></div>
       </div>
       ${showFaceAttackIcon ? '<button class="face-attack-icon" data-tooltip="Atacar directo al héroe rival">⚔️</button>' : ''}
+      ${isReplaceTarget ? '<div class="replace-target-badge" data-tooltip="Sacrificar esta criatura para desplegar la que tenés en la mano">🔄</div>' : ''}
     </div>`;
 }
 
@@ -3244,6 +3273,19 @@ function battleMenuHtml() {
              </div>
            </div>`
         : ''
+    }
+    ${
+      pendingReplace
+        ? `<div class="modal-overlay" id="replace-overlay">
+             <div class="modal-box">
+               <p>¿Sacrificar a <strong>${escapeHtml(pendingReplace.oldCard.name)}</strong> para desplegar a <strong>${escapeHtml(pendingReplace.card.name)}</strong> en su lugar?<br>Se pierde para siempre — va directo al cementerio.</p>
+               <div class="modal-actions">
+                 <button class="btn" id="replace-cancel">Cancelar</button>
+                 <button class="btn danger" id="replace-confirm">Reemplazar</button>
+               </div>
+             </div>
+           </div>`
+        : ''
     }`;
 }
 
@@ -3394,6 +3436,10 @@ function renderBattle() {
   if (endTurnCancelBtn) endTurnCancelBtn.onclick = () => { endTurnConfirmOpen = false; render(); };
   const endTurnConfirmBtn = document.getElementById('end-turn-confirm');
   if (endTurnConfirmBtn) endTurnConfirmBtn.onclick = doEndTurn;
+  const replaceCancelBtn = document.getElementById('replace-cancel');
+  if (replaceCancelBtn) replaceCancelBtn.onclick = cancelReplace;
+  const replaceConfirmBtn = document.getElementById('replace-confirm');
+  if (replaceConfirmBtn) replaceConfirmBtn.onclick = confirmReplace;
 
   app.querySelectorAll('.pile').forEach((el) => {
     el.onclick = () => { openPile = { side: el.dataset.side, kind: el.dataset.kind }; render(); };
@@ -3605,7 +3651,7 @@ function wireHandCardDrag(el, idx) {
       ghost.style.left = `${ev.clientX}px`;
       ghost.style.top = `${ev.clientY}px`;
       const under = document.elementFromPoint(ev.clientX, ev.clientY);
-      const slot = under && under.closest('.lane-slot.legal-target');
+      const slot = under && under.closest('.lane-slot.legal-target, .lane-slot.legal-replace-target');
       if (hoverSlot && hoverSlot !== slot) hoverSlot.classList.remove('drag-hover');
       if (slot) slot.classList.add('drag-hover');
       hoverSlot = slot;
@@ -3629,11 +3675,19 @@ function wireHandCardDrag(el, idx) {
         hoverSlot.classList.remove('drag-hover');
         const lane = Number(hoverSlot.dataset.lane);
         const row = hoverSlot.dataset.row;
-        pendingPlacement = null;
-        if (isOnline()) Net.sendAction({ kind: 'deploy', handIdx: idx, laneIndex: lane, row });
-        else playCreature(battle, 'p1', idx, lane, row);
-        sfx.deploy();
-        vibrate(10);
+        if (hoverSlot.classList.contains('legal-replace-target')) {
+          // Destructive — dropping onto an occupied slot opens the same
+          // confirm modal the tap flow uses instead of resolving right away.
+          const occupant = battle.p1.battlefield[lane][row];
+          pendingPlacement = null;
+          pendingReplace = { idx, card, laneIndex: lane, row, oldCard: getCard(occupant.cardId) };
+        } else {
+          pendingPlacement = null;
+          if (isOnline()) Net.sendAction({ kind: 'deploy', handIdx: idx, laneIndex: lane, row });
+          else playCreature(battle, 'p1', idx, lane, row);
+          sfx.deploy();
+          vibrate(10);
+        }
       } else {
         pendingPlacement = null;
       }
@@ -3794,7 +3848,18 @@ function onSlotClick(side, laneIndex, row, el) {
   if (battle.active !== 'p1' || battle.winner || p1AutoPlay) return;
 
   if (pendingPlacement) {
-    if (side !== 'p1' || !isLegalPlacementSlot(pendingPlacement.card, laneIndex, row)) return;
+    if (side !== 'p1') return;
+    const occupant = battle.p1.battlefield[laneIndex][row];
+    if (occupant) {
+      const legalRows =
+        pendingPlacement.card.placement === 'melee' ? ['front'] : pendingPlacement.card.placement === 'shooter' ? ['back'] : ['front', 'back'];
+      if (!legalRows.includes(row)) return;
+      pendingReplace = { idx: pendingPlacement.idx, card: pendingPlacement.card, laneIndex, row, oldCard: getCard(occupant.cardId) };
+      pendingPlacement = null;
+      render();
+      return;
+    }
+    if (!isLegalPlacementSlot(pendingPlacement.card, laneIndex, row)) return;
     const idx = pendingPlacement.idx;
     pendingPlacement = null;
     if (isOnline()) Net.sendAction({ kind: 'deploy', handIdx: idx, laneIndex, row });
@@ -3872,6 +3937,26 @@ function onSlotClick(side, laneIndex, row, el) {
   const match = options.find((o) => o.type === 'creature' && o.row === row);
   if (!match) return;
   resolveAttack(selectedAttacker, { type: 'creature', row });
+}
+
+// Sacrificing a creature is irreversible (no refund of its mana or the card
+// itself — it's gone to the discard pile for good), so unlike a normal
+// deploy this always goes through an explicit confirm step instead of
+// resolving the instant a legal slot is tapped/dropped on.
+function confirmReplace() {
+  if (!pendingReplace) return;
+  const { idx, laneIndex, row } = pendingReplace;
+  pendingReplace = null;
+  if (isOnline()) Net.sendAction({ kind: 'replace', handIdx: idx, laneIndex, row });
+  else replaceCreature(battle, 'p1', laneIndex, row, idx);
+  sfx.deploy();
+  vibrate([10, 30, 10]);
+  render();
+}
+
+function cancelReplace() {
+  pendingReplace = null;
+  render();
 }
 
 function onFaceClick(side, el) {
@@ -3999,6 +4084,10 @@ function animateOpponentStep(step) {
     sfx.deploy();
     vibrate(10);
     showAiToast(`El rival juega ${step.card.name}`);
+  } else if (step.type === 'replace') {
+    sfx.deploy();
+    vibrate([10, 30, 10]);
+    showAiToast(`El rival sacrifica a ${step.oldCard.name} y despliega a ${step.card.name}`);
   } else if (step.type === 'move') {
     sfx.click();
     showAiToast(`El rival reposiciona ${step.card.name}`);
