@@ -907,9 +907,24 @@ const TUTORIAL_SECTIONS = [
     text: '4 carriles con fila delantera y trasera. Cuerpo a cuerpo va adelante, a distancia atrás, volador en cualquiera. Cada carta pide maná más un nivel mínimo del atributo correspondiente.',
   },
   {
+    icon: '🌟',
+    title: 'Auras de facción',
+    text: 'Si tenés 4 o más criaturas de una misma facción en el campo, se activa su aura pasiva (por ejemplo +1 Ataque para Ignara, o -1 Ataque y Vida rival para Umbra). Podés tener hasta dos auras activas a la vez si combinás facciones en tu mazo.',
+  },
+  {
     icon: '🗡️',
     title: 'Combate',
     text: 'Tu criatura ataca primero; si la rival sobrevive, contraataca — a distancia nunca recibe contraataque. En vez de atacar, una criatura lista puede moverse a otro casillero libre.',
+  },
+  {
+    icon: '🔄',
+    title: 'Reemplazar criatura',
+    text: 'Si el campo está lleno o querés sorprender al rival, podés sacrificar una criatura propia para desplegar otra desde tu mano en su lugar, pagando el maná y nivel de atributo de la nueva carta. La sacrificada se pierde para siempre y va directo al cementerio.',
+  },
+  {
+    icon: '💀',
+    title: 'Cementerio',
+    text: 'Las criaturas que mueren o son sacrificadas van al cementerio. Algunas cartas de Umbra pueden devolver criaturas al azar desde ahí, a la mano o directo al campo.',
   },
 ];
 
