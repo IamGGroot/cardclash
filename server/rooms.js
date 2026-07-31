@@ -28,6 +28,15 @@ const DECK_SIZE = 16;
 const DISCONNECT_GRACE_MS = Number(env('DISCONNECT_GRACE_MS', '30000'));
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I — easier to read aloud/type
 
+// Every match (Quick Match, Autodeckbuilder, Draft/Torneo bracket) is capped
+// at a fixed wall-clock budget from the moment it starts — not turns — so a
+// slow or stalling player can't hold a match (or, worse, a whole draft/
+// tournament pod waiting on their bracket result) open indefinitely. On
+// expiry, whoever has more hero HP at that instant wins; an exact tie is
+// broken by a coin flip rather than a draw, since the rest of the match
+// pipeline (trophies, bracket advancement) all expect a real winner.
+const MATCH_TIME_LIMIT_MS = Number(env('MATCH_TIME_LIMIT_MS', String(5 * 60 * 1000)));
+
 // Quick Match pairs the closest trophy count available; the acceptable gap
 // widens the longer someone's been waiting, so a lone player in a quiet
 // lobby still eventually gets matched instead of waiting forever. Since
@@ -153,6 +162,8 @@ function makeRoom(code, quickMatch) {
     },
     state: null,
     finished: false,
+    matchTimer: null,
+    matchDeadline: null, // Date.now()-based timestamp, sent to clients so their own countdown survives reconnects/latency without needing to re-derive it
   };
   rooms.set(code, room);
   return room;
@@ -183,6 +194,7 @@ function startMatch(room, { perkThreshold } = {}) {
   const heroP1 = findHero(p1.faction);
   const heroP2 = findHero(p2.faction);
   room.state = newGame(p1.deck, heroP1.id, p2.deck, heroP2.id, { perkThreshold });
+  armMatchTimer(room);
 
   for (const side of ['p1', 'p2']) {
     const player = room.players[side];
@@ -193,6 +205,7 @@ function startMatch(room, { perkThreshold } = {}) {
       opponentFaction: opponent.faction,
       opponentName: opponentDisplayName(opponent),
       state: viewFor(room.state, side),
+      matchDeadline: room.matchDeadline,
     });
   }
   // Fire-and-forget: newGame() always leaves p1 active, so if that side is
@@ -201,6 +214,27 @@ function startMatch(room, { perkThreshold } = {}) {
   // will never arrive.
   runAutoPlayTurns(room);
   runBotOpponentTurns(room);
+}
+
+// Whoever has more hero HP at the instant the match's time budget runs out
+// wins; an exact tie is a coin flip (see MATCH_TIME_LIMIT_MS above for why
+// this never resolves as a draw).
+function timeoutWinner(state) {
+  if (state.p1.hp === state.p2.hp) return Math.random() < 0.5 ? 'p1' : 'p2';
+  return state.p1.hp > state.p2.hp ? 'p1' : 'p2';
+}
+
+function armMatchTimer(room) {
+  clearTimeout(room.matchTimer);
+  room.matchDeadline = Date.now() + MATCH_TIME_LIMIT_MS;
+  room.matchTimer = setTimeout(() => {
+    if (room.finished || !room.state || room.state.winner) return;
+    endMatch(room, timeoutWinner(room.state));
+  }, MATCH_TIME_LIMIT_MS);
+  // A match that's abandoned without ever forfeiting (rare, but the disconnect
+  // grace period + reconnect window means it can outlive a short test run)
+  // shouldn't hold the Node process open on this timer alone.
+  room.matchTimer.unref?.();
 }
 
 // Exported as displayNameFor: draftPods.js/tournamentPods.js reuse this to
@@ -233,13 +267,18 @@ export function registerHeroes(heroes) {
 // pod already knows both players' decks and heroes. `onFinished(winnerSide,
 // room)` fires once, right as the room is torn down in endMatch(), so the
 // caller can chain into the next bracket stage or award prizes.
-export function startDirectMatch(playerA, playerB, { perkThreshold, quickMatch = false, onFinished } = {}) {
+export function startDirectMatch(playerA, playerB, { perkThreshold, quickMatch = false, onFinished, onStarted } = {}) {
   const code = generateCode();
   const room = makeRoom(code, quickMatch);
   if (onFinished) room.onFinished = onFinished;
   attachPlayer(room, 'p1', playerA);
   attachPlayer(room, 'p2', playerB);
   startMatch(room, { perkThreshold });
+  // Fires synchronously, once room.matchDeadline is set — lets a caller like
+  // draftPods.js/tournamentPods.js attach this match's deadline onto its own
+  // bracket-status broadcast, since the 2 pod seats not playing this match
+  // have no other way to learn "how much time is left in the live round."
+  if (onStarted) onStarted(room);
   return room;
 }
 
@@ -355,6 +394,7 @@ export function cancelQuickMatch(ws) {
 function endMatch(room, winnerSide) {
   if (room.finished || !room.state) return;
   room.finished = true;
+  clearTimeout(room.matchTimer);
   room.state.winner = winnerSide;
   for (const side of ['p1', 'p2']) {
     const player = room.players[side];
@@ -606,6 +646,7 @@ export function tryReconnect(ws, token) {
     opponentFaction: opponent.faction,
     opponentName: opponentDisplayName(opponent),
     state: viewFor(room.state, side),
+    matchDeadline: room.matchDeadline,
     reconnected: true,
   });
   return true;

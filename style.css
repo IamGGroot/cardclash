@@ -934,6 +934,16 @@ html, body {
 }
 
 .missions-widget.missions-tab-panel {
+  /* Taken out of the wrap's flex flow and pinned to the same top:50% center
+     the handle uses, via its own absolute position — otherwise (as a flex
+     sibling of the handle) the wrap's total height depended on the panel's
+     content height, which varies with how many missions/badges are showing,
+     so the wrap's top:50%-centered box (and the handle inside it) visibly
+     shifted up or down by a few pixels every time the panel opened/closed. */
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  transform: translateY(-50%);
   max-width: 0;
   width: 0;
   padding: 0;
@@ -3461,6 +3471,23 @@ html, body {
 
 .turn-indicator.coach-active {
   padding: 0;
+}
+
+.battle-match-timer {
+  display: inline-block;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.battle-match-timer.urgent {
+  color: #ff6b6b;
+  animation: match-timer-pulse 1s ease-in-out infinite;
+}
+
+@keyframes match-timer-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .tutorial-coach-banner {

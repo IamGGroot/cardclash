@@ -81,6 +81,25 @@ async function playOutDraftClient(ws) {
   throw new Error('draftPrize never arrived within the message budget');
 }
 
+// Same shape as playOutDraftClient, but also records every draftBracketUpdate
+// it sees along the way, so the caller can inspect how the bracket's
+// semis/final deadlines evolve as matches actually start.
+async function playOutDraftClientCapturingBracket(ws, bracketUpdates) {
+  for (let i = 0; i < 500; i++) {
+    const msg = await nextMessage(ws);
+    if (msg.type === 'draftBonusCard') {
+      ws.send(JSON.stringify({ type: 'draftHeroPick', faction: 'albura' }));
+    } else if (msg.type === 'matchStart') {
+      ws.send(JSON.stringify({ type: 'action', action: { kind: 'forfeit' } }));
+    } else if (msg.type === 'draftBracketUpdate') {
+      bracketUpdates.push(msg);
+    } else if (msg.type === 'draftPrize') {
+      return msg.prize;
+    }
+  }
+  throw new Error('draftPrize never arrived within the message budget');
+}
+
 describe('draft pods over real WebSocket connections', () => {
   test('4 players queue, draft 16 cards each via auto-pick, choose a hero, and the bracket resolves with prizes for all 4', async () => {
     const sockets = await Promise.all([connect(), connect(), connect(), connect()]);
@@ -100,6 +119,25 @@ describe('draft pods over real WebSocket connections', () => {
     assert.equal(packPrizes.length, 2, 'the two finalists should each get pack prizes');
     const packCounts = packPrizes.map((p) => p.packs.length).sort();
     assert.deepEqual(packCounts, [1, 2], 'runner-up gets 1 pack, champion gets 2');
+
+    sockets.forEach((ws) => ws.close());
+  });
+
+  test('bracket updates carry a deadline for a semifinal once it actually starts', async () => {
+    const sockets = await Promise.all([connect(), connect(), connect(), connect()]);
+    const idents = [];
+    for (const ws of sockets) idents.push(await identify(ws, null));
+
+    sockets.forEach((ws, i) => ws.send(JSON.stringify({ type: 'queueDraft', token: idents[i].account.token })));
+
+    const bracketUpdates = sockets.map(() => []);
+    await Promise.all(sockets.map((ws, i) => playOutDraftClientCapturingBracket(ws, bracketUpdates[i])));
+
+    const before = Date.now() - 60000; // generous lower bound, well before this test started
+    const someUpdateHasADeadline = bracketUpdates.some((updates) =>
+      updates.some((u) => u.semis.some((s) => typeof s.deadline === 'number' && s.deadline > before))
+    );
+    assert.ok(someUpdateHasADeadline, 'at least one bracket update must carry a semifinal deadline once that match starts');
 
     sockets.forEach((ws) => ws.close());
   });

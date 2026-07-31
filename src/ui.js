@@ -110,6 +110,8 @@ let onlineIntent = null; // { mode: 'quick'|'create'|'join', code? } set right b
 let onlineStatus = null; // { kind: 'connecting'|'queued'|'creating'|'waitingCode'|'joining'|'error', message?, code? } drives renderOnlineWaiting
 let opponentName = null; // display name for the current online match's opponent — a real username, or the matchmaking bot's random name
 let pendingTrophyResult = null; // { trophies, delta } from the most recent online matchEnd, consumed once by endMatch()
+let matchDeadline = null; // server timestamp (Date.now()-based) the current online match's 5-minute clock expires at — whoever has more hero HP then wins
+let matchTimerIntervalId = null;
 
 // ---- Guided first-battle tutorial coach ----
 // Runs on top of a REAL vs-AI match (not a scripted fake one). Each
@@ -2651,6 +2653,7 @@ function endMatch(winner) {
   const wasOnline = !!onlineRoom;
   const wasAutoPlay = p1AutoPlay;
   onlineRoom = null;
+  matchDeadline = null;
   p1AutoPlay = false;
   const won = winner === 'p1';
   const reward = matchReward(won);
@@ -2817,6 +2820,7 @@ function setupNetListeners() {
     battle = msg.state;
     onlineRoom = { code: msg.code };
     opponentName = msg.opponentName || null;
+    matchDeadline = msg.matchDeadline || null;
     onlineIntent = null;
     onlineStatus = null;
     prevOccupancy = new Set();
@@ -3288,6 +3292,37 @@ function tutorialCoachStepInfo(state) {
   return { text: '✅ ¡Ya sabés lo básico! Seguí jugando para ganar la partida.', final: true };
 }
 
+function formatMatchClock(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `⏱ ${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Online matches only (matchDeadline is null for the offline guided
+// tutorial) — ticks the turn-indicator's countdown once a second without a
+// full render, same self-clearing-when-the-element-is-gone pattern as
+// armDraftTimerDisplay. The server is the sole authority on when time is
+// actually up (see rooms.js's armMatchTimer); this is display-only.
+function armMatchTimerDisplay() {
+  clearInterval(matchTimerIntervalId);
+  matchTimerIntervalId = null;
+  if (!matchDeadline) return;
+  const tick = () => {
+    const el = document.getElementById('battle-match-timer');
+    if (!el || !matchDeadline) {
+      clearInterval(matchTimerIntervalId);
+      matchTimerIntervalId = null;
+      return;
+    }
+    const remainingMs = matchDeadline - Date.now();
+    el.textContent = formatMatchClock(remainingMs);
+    el.classList.toggle('urgent', remainingMs <= 30000);
+  };
+  tick();
+  matchTimerIntervalId = setInterval(tick, 1000);
+}
+
 function renderBattle() {
   if (battle.winner) {
     endMatch(battle.winner);
@@ -3318,7 +3353,7 @@ function renderBattle() {
                 <span>${coachStep.text}</span>
                 ${coachStep.final ? '<button class="btn small primary" id="tutorial-coach-done">Entendido</button>' : ''}
               </div>`
-            : `${turnLabel(state)} · Turno ${state.turn}`
+            : `${turnLabel(state)} · Turno ${state.turn}${matchDeadline ? `<span class="battle-match-timer" id="battle-match-timer" data-tooltip="Si el tiempo se agota, gana quien tenga más vida"></span>` : ''}`
         }
       </div>
       ${heroPanelHtml(state, 'p1', highlights)}
@@ -3327,6 +3362,7 @@ function renderBattle() {
     </div>`;
 
   updateOccupancy(state);
+  armMatchTimerDisplay();
 
   const endBtn = document.getElementById('end-turn');
   if (endBtn) endBtn.onclick = onEndTurn;
@@ -4128,6 +4164,12 @@ function startBracketElapsedTimer() {
       return;
     }
     el.textContent = formatElapsed(Date.now() - bracketStatus.startedAt);
+    // Only present while the status modal is open (see bracketMatchRowHtml)
+    // — an empty NodeList the rest of the time is a harmless no-op.
+    document.querySelectorAll('.bracket-match-clock').forEach((clockEl) => {
+      const deadline = Number(clockEl.dataset.deadline);
+      if (deadline) clockEl.textContent = ` · ${formatMatchClock(deadline - Date.now())}`;
+    });
   }, 1000);
 }
 
@@ -4178,12 +4220,20 @@ function bracketMatchRowHtml(label, match, seats) {
       </div>`;
   }
   const [a, b] = match.players;
-  const status = match.winner == null ? 'En juego…' : `${bracketSeatLabel(seats[match.winner])} ganó`;
+  const isLive = match.winner == null;
+  const status = isLive ? 'En juego…' : `${bracketSeatLabel(seats[match.winner])} ganó`;
+  // Live only, and only once rooms.js has actually armed the match's 5-minute
+  // timer (a brand-new match can be live for a moment before its own
+  // matchStart — and this deadline with it — has round-tripped back here).
+  const clockHtml =
+    isLive && match.deadline
+      ? `<span class="bracket-match-clock" data-deadline="${match.deadline}"> · ${formatMatchClock(match.deadline - Date.now())}</span>`
+      : '';
   return `
-    <div class="bracket-match ${match.winner != null ? 'done' : 'live'}">
+    <div class="bracket-match ${isLive ? 'live' : 'done'}">
       <span class="bracket-match-label">${label}</span>
       <span class="bracket-match-players">${bracketSeatLabel(seats[a])} <em>vs</em> ${bracketSeatLabel(seats[b])}</span>
-      <span class="bracket-match-status">${status}</span>
+      <span class="bracket-match-status">${status}${clockHtml}</span>
     </div>`;
 }
 

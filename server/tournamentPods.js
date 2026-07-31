@@ -83,7 +83,7 @@ function startPod(seats) {
 
   const semiResults = [null, null];
   semis.forEach(([i, j], semiIndex) => {
-    startBracketMatch(seats, i, j, (winnerSeat, loserSeat) => {
+    startBracketMatch(seats, bracket, i, j, bracket.semis[semiIndex], (winnerSeat, loserSeat) => {
       semiResults[semiIndex] = { winner: winnerSeat, loser: loserSeat };
       bracket.semis[semiIndex].winner = winnerSeat;
       awardPrize(seats, loserSeat, { commonCard: drawRandomCommonCard() });
@@ -92,7 +92,7 @@ function startPod(seats) {
       }
       broadcastBracket(seats, bracket);
       if (semiResults.every((r) => r)) {
-        startBracketMatch(seats, semiResults[0].winner, semiResults[1].winner, (finalWinner, finalLoser) => {
+        startBracketMatch(seats, bracket, semiResults[0].winner, semiResults[1].winner, bracket.final, (finalWinner, finalLoser) => {
           bracket.final.winner = finalWinner;
           awardPrize(seats, finalWinner, { packs: ['gem_pack', 'coin_pack'] });
           awardPrize(seats, finalLoser, { packs: ['coin_pack'] });
@@ -103,13 +103,20 @@ function startPod(seats) {
   });
 }
 
-function startBracketMatch(seats, seatA, seatB, onDone) {
+// `bracketEntry` is the exact semis[i]/final object this match corresponds
+// to — stamping its deadline directly (rather than searching bracket by seat
+// pair) works identically for both semis and the final.
+function startBracketMatch(seats, bracket, seatA, seatB, bracketEntry, onDone) {
   const a = seats[seatA];
   const b = seats[seatB];
   startDirectMatch(
     { ws: a.ws, token: a.token, faction: a.faction, deck: a.deck, autoPlay: false, isBot: a.isBot, botName: a.botName },
     { ws: b.ws, token: b.token, faction: b.faction, deck: b.deck, autoPlay: false, isBot: b.isBot, botName: b.botName },
     {
+      onStarted: (room) => {
+        bracketEntry.deadline = room.matchDeadline;
+        broadcastBracket(seats, bracket);
+      },
       onFinished: (winnerSide) => {
         const winnerSeat = winnerSide === 'p1' ? seatA : seatB;
         const loserSeat = winnerSide === 'p1' ? seatB : seatA;

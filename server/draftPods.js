@@ -275,9 +275,16 @@ function seatToRoomPlayer(pod, seatIndex) {
   };
 }
 
-function startBracketMatch(pod, seatA, seatB, onDone) {
+// `bracketEntry` is the exact semis[i]/final object this match corresponds
+// to — stamping its deadline directly (rather than searching pod.bracket by
+// seat pair) means it works identically for both semis and the final.
+function startBracketMatch(pod, seatA, seatB, bracketEntry, onDone) {
   startDirectMatch(seatToRoomPlayer(pod, seatA), seatToRoomPlayer(pod, seatB), {
     perkThreshold: Draft.DRAFT_PERK_THRESHOLD,
+    onStarted: (room) => {
+      bracketEntry.deadline = room.matchDeadline;
+      broadcastBracket(pod);
+    },
     onFinished: (winnerSide) => {
       const winnerSeat = winnerSide === 'p1' ? seatA : seatB;
       const loserSeat = winnerSide === 'p1' ? seatB : seatA;
@@ -316,7 +323,7 @@ function startBracket(pod) {
 
   const semiResults = [null, null];
   semis.forEach(([i, j], semiIndex) => {
-    startBracketMatch(pod, i, j, (winnerSeat, loserSeat) => {
+    startBracketMatch(pod, i, j, pod.bracket.semis[semiIndex], (winnerSeat, loserSeat) => {
       semiResults[semiIndex] = { winner: winnerSeat, loser: loserSeat };
       pod.bracket.semis[semiIndex].winner = winnerSeat;
       awardPrize(pod, loserSeat, { commonCard: Draft.drawRandomCommonCard() });
@@ -325,7 +332,7 @@ function startBracket(pod) {
       }
       broadcastBracket(pod);
       if (semiResults.every((r) => r)) {
-        startBracketMatch(pod, semiResults[0].winner, semiResults[1].winner, (finalWinner, finalLoser) => {
+        startBracketMatch(pod, semiResults[0].winner, semiResults[1].winner, pod.bracket.final, (finalWinner, finalLoser) => {
           pod.bracket.final.winner = finalWinner;
           awardPrize(pod, finalWinner, { packs: ['gem_pack', 'coin_pack'] });
           awardPrize(pod, finalLoser, { packs: ['coin_pack'] });
